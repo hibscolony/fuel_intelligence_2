@@ -1,0 +1,5 @@
+issue_code,data_status,n_occurrences,n_equipment_affected,example_equipment_id,example_source_sheet,example_source_row,description
+HIGH_VAL_001,UNUSUALLY_HIGH,122,67,B 7697 TK,SEPTEMBER 2025,251,Nilai liter tidak wajar tinggi dibanding pola historis kategori yang sama (ambang IQR)
+INV_DATE_001,INVALID_DATE,45,12,23,FEBUARI 2025,69,"Tanggal tidak valid (kemungkinan kolom hari ikut ter-copy dari bulan lain, mis. tanggal 30/31 Februari)"
+DUP_001,DUPLICATE,2,1,MODUL 5,MEI 2026,271,"Transaksi duplikat: kombinasi (tanggal, kategori, equipment_id) muncul lebih dari sekali"
+UNK_STAT_001,UNKNOWN_STATUS,1,1,B 7962 TAA,FEBUARI 2026,263,Teks status pada sel tidak dikenali (bukan FULL/PM/GRAHA/SCRUB/LELANG/KURAS)

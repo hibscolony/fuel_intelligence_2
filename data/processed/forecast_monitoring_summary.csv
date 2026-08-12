@@ -1,0 +1,2 @@
+model_name,n_days_evaluated,mae,rmse,wape,bias,interval_coverage_pct,model_health_status
+PLACEHOLDER_SEASONAL_NAIVE_7,560,2321.5,3315.3,12.64,-32.2,80.0,MONITOR

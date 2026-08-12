@@ -1,0 +1,4 @@
+scenario,reduction_percentage_applied,projected_consumption,projected_cost,saving_liter,saving_cost,gap_to_target_liter,projected_liter_per_teu,target_achievement_percentage,required_monthly_reduction,required_daily_reduction
+Business as Usual,0.0,10420747.7,70861084089.0,0.0,0.0,1400548.5,4.65,0.0,116712.4,3837.12
+Moderate Saving,6.72,9720473.4,66099219239.0,700274.2,4761864851.0,700274.2,4.3376,50.0,116712.4,3837.12
+Target Saving,13.44,9020199.2,61337354388.0,1400548.5,9523729702.0,0.0,4.0251,100.0,116712.4,3837.12

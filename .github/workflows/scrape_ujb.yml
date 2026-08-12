@@ -1,0 +1,46 @@
+name: Scrape UJB Dashboard Data
+
+# Jadwal: tiap 30 menit. Sesuaikan cron di bawah kalau mau lebih jarang/sering --
+# tapi jangan terlalu sering (mis. tiap menit), supaya tidak membebani server
+# vendor dan tidak boros GitHub Actions minutes.
+# Format cron: menit jam tanggal bulan hari -- semua dalam UTC.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}  # tombol "Run workflow" manual di tab Actions GitHub
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install playwright pandas
+          playwright install --with-deps chromium
+
+      - name: Run scraper
+        env:
+          UJB_USERNAME: ${{ secrets.UJB_USERNAME }}
+          UJB_PASSWORD: ${{ secrets.UJB_PASSWORD }}
+          UJB_OUTPUT_DIR: ${{ github.workspace }}/data/raw
+        run: python ujb_dashboard_scraper.py
+
+      - name: Commit & push kalau ada data baru
+        run: |
+          git config user.name "ujb-scraper-bot"
+          git config user.email "actions@github.com"
+          git add data/raw/ujb_scraped_latest.csv
+          if git diff --cached --quiet; then
+            echo "Tidak ada perubahan data, skip commit."
+          else
+            git commit -m "chore: auto-update data UJB scrape [skip ci]"
+            git push
+          fi

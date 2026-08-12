@@ -1,0 +1,2 @@
+data_completeness_percentage,valid_transaction_percentage,duplicate_count,missing_equipment_count,invalid_value_count,unusually_high_count,invalid_date_count,monthly_difference_liter_max,n_months_major_reconciliation_issue,reconciliation_status,overall_status
+56.17,99.8,2,0,0,121,45,36306.7,3,REVIEW,FAILED
