@@ -62,11 +62,11 @@ def test_forecast_chart_and_metrics_change_with_selected_model():
         at = AppTest.from_file(str(PROJECT_ROOT / "pages/forecast_monitoring.py"), default_timeout=200)
         at.run()
         assert not at.exception
-        metrics_before = [m.value for m in at.metric][:5]
+        metrics_before = [m.value for m in at.markdown if 'jict-metric-value' in m.value][:5]
 
         at.selectbox[0].select("hist_gradient_boosting").run()
         assert not at.exception
-        metrics_after = [m.value for m in at.metric][:5]
+        metrics_after = [m.value for m in at.markdown if 'jict-metric-value' in m.value][:5]
 
     assert metrics_before != metrics_after, "Metrics/graph did not change when switching models"
 

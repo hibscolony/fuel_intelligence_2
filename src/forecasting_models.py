@@ -139,6 +139,7 @@ def _recursive_forecast_holt_winters(history: pd.Series, horizon: int) -> pd.Ser
 
 def recursive_forecast(history: pd.Series, horizon: int, model_name: str) -> pd.Series:
     """Forecast rekursif hari-demi-hari sejauh `horizon` hari sejak akhir `history`."""
+    history = history.ffill().bfill().fillna(0.0)
     if model_name in {"naive", "seasonal_naive_7", "moving_average_7", "moving_average_30"}:
         return _recursive_forecast_baseline(history, horizon, model_name)
     if model_name == "holt_winters":
@@ -153,6 +154,7 @@ def backtest_residual_quantiles(history: pd.Series, model_name: str,
     """Bangun residual (actual - forecast) dari backtest 1-step-ahead
     sepanjang `backtest_days` terakhir, dipakai utk prediction interval.
     """
+    history = history.ffill().bfill().fillna(0.0)
     backtest_days = backtest_days or config.FORECAST_BACKTEST_DAYS
     n = len(history)
     if n < backtest_days + 40:
@@ -167,7 +169,9 @@ def backtest_residual_quantiles(history: pd.Series, model_name: str,
         actual = history.iloc[i]
         try:
             pred = recursive_forecast(train, 1, model_name).iloc[0]
-            residuals.append(actual - pred)
+            r = actual - pred
+            if not np.isnan(r):
+                residuals.append(r)
         except Exception:
             continue
     return np.array(residuals) if residuals else np.array([0.0])
@@ -183,6 +187,7 @@ def climatology_forecast(history: pd.Series, target_date: pd.Timestamp,
     dari model), sehingga otomatis lebih lebar -- mencerminkan ketidaktahuan
     yang jauh lebih besar untuk horizon ini.
     """
+    history = history.ffill().bfill().fillna(0.0)
     window_days = window_days or config.FORECAST_CLIMATOLOGY_WINDOW_DAYS
     target_doy = target_date.dayofyear
     history_doy = history.index.dayofyear
@@ -210,6 +215,7 @@ def build_backtest_dataframe(history: pd.Series, model_name: str,
     "Aktual vs Forecast" bisa dipakai ulang untuk model APAPUN yang dipilih
     dari dropdown -- bukan cuma model yang sedang diintegrasikan/dipantau.
     """
+    history = history.ffill().bfill().fillna(0.0)
     backtest_days = backtest_days or config.FORECAST_BACKTEST_DAYS
     n = len(history)
     if n < backtest_days + 40:
@@ -231,8 +237,11 @@ def build_backtest_dataframe(history: pd.Series, model_name: str,
         forecasts.append(pred)
 
     df = pd.DataFrame({"date": dates, "actual_fuel": actuals, "forecast_fuel": forecasts})
-    residuals = (df["actual_fuel"] - df["forecast_fuel"]).values
-    lower_resid, upper_resid = np.quantile(residuals, lower_q), np.quantile(residuals, upper_q)
+    residuals = (df["actual_fuel"] - df["forecast_fuel"]).dropna().values
+    if len(residuals) == 0:
+        lower_resid, upper_resid = 0.0, 0.0
+    else:
+        lower_resid, upper_resid = float(np.quantile(residuals, lower_q)), float(np.quantile(residuals, upper_q))
     df["lower_interval"] = df["forecast_fuel"] + lower_resid
     df["upper_interval"] = df["forecast_fuel"] + upper_resid
     df["model_name"] = config.FORECAST_MODEL_CHOICES.get(model_name, model_name)
@@ -250,8 +259,8 @@ def build_cross_year_validation(daily_full: pd.Series, cutoff_date: pd.Timestamp
     dengan logika forecast_for_date(), tapi di sini dites terhadap data
     aktual sungguhan yang sudah terjadi, bukan cuma titik di masa depan.
     """
-    history = daily_full.loc[:cutoff_date].dropna()
-    actual_future = daily_full.loc[cutoff_date + pd.Timedelta(days=1):].dropna()
+    history = daily_full.loc[:cutoff_date].ffill().bfill().fillna(0.0)
+    actual_future = daily_full.loc[cutoff_date + pd.Timedelta(days=1):].fillna(0.0)
     if len(actual_future) == 0:
         raise ValueError("Tidak ada data aktual setelah cutoff_date untuk divalidasi.")
 
@@ -284,6 +293,7 @@ def forecast_for_date(history: pd.Series, model_name: str, target_date: pd.Times
     target, otomatis memilih rezim (rekursif vs klimatologi) berdasarkan
     seberapa jauh target_date dari data historis terakhir.
     """
+    history = history.ffill().bfill().fillna(0.0)
     last_date = history.index.max()
     horizon_days = (target_date - last_date).days
 
@@ -301,8 +311,10 @@ def forecast_for_date(history: pd.Series, model_name: str, target_date: pd.Times
         path = recursive_forecast(history, horizon_days, model_name)
         point = float(path.iloc[-1])
         residuals = backtest_residual_quantiles(history, model_name)
-        lower = point + float(np.quantile(residuals, lower_q))
-        upper = point + float(np.quantile(residuals, upper_q))
+        lower_resid = float(np.quantile(residuals, lower_q)) if len(residuals) > 0 else 0.0
+        upper_resid = float(np.quantile(residuals, upper_q)) if len(residuals) > 0 else 0.0
+        lower = point + lower_resid
+        upper = point + upper_resid
         return {
             "method": "recursive_forecast", "model_name": model_name, "point": point,
             "lower": lower, "upper": upper, "horizon_days": horizon_days, "path": path,

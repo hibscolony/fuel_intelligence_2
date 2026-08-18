@@ -118,6 +118,9 @@ def compute_forecast_errors(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _wape(actual: np.ndarray, pred: np.ndarray) -> float:
+    mask = ~np.isnan(actual) & ~np.isnan(pred)
+    actual = actual[mask]
+    pred = pred[mask]
     denom = np.sum(np.abs(actual))
     return float(np.nan) if denom == 0 else float(np.sum(np.abs(actual - pred)) / denom)
 
@@ -148,10 +151,10 @@ class ForecastMonitoringSummary:
 def compute_overall_metrics(df_with_errors: pd.DataFrame) -> ForecastMonitoringSummary:
     actual = df_with_errors["actual_fuel"].values
     pred = df_with_errors["forecast_fuel"].values
-    mae = float(np.mean(np.abs(actual - pred)))
-    rmse = float(np.sqrt(np.mean((actual - pred) ** 2)))
+    mae = float(np.nanmean(np.abs(actual - pred)))
+    rmse = float(np.sqrt(np.nanmean((actual - pred) ** 2)))
     wape = _wape(actual, pred) * 100
-    bias = float(np.mean(actual - pred))
+    bias = float(np.nanmean(actual - pred))
     coverage = float(df_with_errors["within_interval"].mean() * 100)
     model_name = (df_with_errors["model_name"].iloc[0] if len(df_with_errors) else "UNKNOWN")
 
