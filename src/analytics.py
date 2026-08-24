@@ -49,13 +49,13 @@ from src.forecasting_models import build_backtest_dataframe as _build_backtest_d
 from src.forecasting_models import build_cross_year_validation as _build_cross_year_validation
 
 
-@st.cache_data(show_spinner="Memuat data dari UJB...")
+@st.cache_data(show_spinner="Memuat data hybrid Excel + UJB...")
 def get_cleaning_result() -> dict:
-    """Cache tidak bisa langsung menyimpan dataclass custom dengan nyaman di
-    semua versi Streamlit -- jadi dibungkus dict berisi DataFrame murni.
+    """Jalankan source reconciliation + cleaning dan bungkus hasil sebagai dict.
 
-    Sumber data ditentukan config.DATA_SOURCE_MODE (default "ujb") --
-    lihat src/data_cleaning.run_cleaning_pipeline() untuk detail.
+    Sumber data ditentukan ``config.DATA_SOURCE_MODE`` (default ``hybrid``).
+    Audit source precedence ikut diekspos agar halaman Data Quality dapat
+    menunjukkan row/liter mana yang dipakai atau disuppress dari tiap sumber.
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -75,6 +75,7 @@ def get_cleaning_result() -> dict:
         "monthly_reconciliation": result.monthly_reconciliation,
         "category_monthly_reconciliation": result.category_monthly_reconciliation,
         "totalisator_df": result.totalisator_df,
+        "source_reconciliation_audit": result.source_reconciliation_audit,
     }
 
 
@@ -92,11 +93,6 @@ def get_data_quality() -> dict:
 @st.cache_data(show_spinner="Memuat & memantau hasil forecasting...")
 def get_forecast_monitoring() -> dict:
     cleaning = get_cleaning_result()
-    # Target forecast dibangun lewat satu fungsi khusus agar:
-    # - duplicate tidak terhitung dua kali,
-    # - nilai negatif/invalid tidak masuk,
-    # - hari berstatus-only menjadi 0 liter tercatat,
-    # - source coverage gap TIDAK diam-diam di-drop sehingga lag kalender aman.
     daily_actual = build_daily_refueling_series(cleaning["cleaned_fuel_data"], strict_source_coverage=True)
 
     with warnings.catch_warnings():
@@ -158,10 +154,6 @@ def get_saving_scenarios(fuel_price_per_liter: Optional[float] = None,
                           saving_target_liter: Optional[float] = None,
                           target_throughput_teu: Optional[float] = None,
                           actual_teu: Optional[float] = None) -> dict:
-    """TIDAK di-cache -- ini yang menerima input interaktif dari pengguna
-    di halaman Saving Simulator, jadi harus selalu dihitung ulang saat
-    parameter berubah (Streamlit reruns script on every widget interaction).
-    """
     cleaning = get_cleaning_result()
     valid = cleaning["cleaned_fuel_data"][cleaning["cleaned_fuel_data"]["data_status"] != "INVALID_DATE"]
     baseline_total = float(valid["fuel_liter"].sum())
@@ -191,35 +183,18 @@ def get_recommendations() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def get_daily_actual_series() -> pd.Series:
-    """Deret harian total PENGISIAN TERCATAT (semua alat), seluruh tahun.
-
-    Deret ini selalu berfrekuensi kalender harian. Hari yang memang memiliki
-    coverage sumber tetapi tidak ada liter numerik dicatat sebagai 0. Hari tanpa
-    coverage sumber sama sekali dianggap unresolved data gap dan forecasting
-    dihentikan, bukan ``dropna`` -- supaya lag_7 tetap berarti tujuh hari kalender.
-    """
     cleaning = get_cleaning_result()
     return build_daily_refueling_series(cleaning["cleaned_fuel_data"], strict_source_coverage=True)
 
 
 @st.cache_data(show_spinner=False)
 def get_forecast_training_series() -> pd.Series:
-    """Deret harian HANYA sampai `config.FORECAST_TRAINING_CUTOFF` -- dipakai
-    sbg dasar MELATIH/menjalankan model di Forecast Explorer & perbandingan
-    model (backtest). Data sesudah cutoff (mis. tahun 2026) SENGAJA tidak
-    diikutkan di sini, supaya forecast ke tanggal setelah cutoff itu betul-betul
-    out-of-sample -- bukan diam-diam "mengintip" data yang sudah terjadi.
-    """
     import pandas as pd
     full = get_daily_actual_series()
     return full.loc[:pd.Timestamp(config.FORECAST_TRAINING_CUTOFF)]
 
 
 def get_forecast_for_date(model_name: str, target_date) -> dict:
-    """TIDAK di-cache -- dipanggil interaktif dari Forecast Explorer setiap
-    kali pengguna mengubah model/tanggal (Streamlit reruns script per input).
-    Memakai HANYA data training (lihat get_forecast_training_series).
-    """
     import pandas as pd
     training_series = get_forecast_training_series()
     return _forecast_for_date(training_series, model_name, pd.Timestamp(target_date))
@@ -227,11 +202,6 @@ def get_forecast_for_date(model_name: str, target_date) -> dict:
 
 @st.cache_data(show_spinner="Menjalankan backtest untuk model terpilih...")
 def get_model_backtest(model_name: str, backtest_days: int = 60) -> dict:
-    """Backtest walk-forward 1-hari-ke-depan untuk MODEL YANG DIPILIH
-    pengguna -- dipakai supaya grafik & metrik "Aktual vs Forecast" ikut
-    berubah sesuai model, bukan cuma titik prediksi masa depan. Memakai
-    HANYA data training (tidak termasuk tahun setelah cutoff).
-    """
     training_series = get_forecast_training_series()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -249,12 +219,6 @@ def get_multi_horizon_backtest(model_name: str,
                                horizons: tuple[int, ...] = DEFAULT_EVAL_HORIZONS,
                                evaluation_days: int = 180,
                                origin_step_days: int = 7) -> dict:
-    """Rolling-origin evaluation D+1/D+3/D+7/... secara terpisah.
-
-    Berbeda dari ``get_model_backtest`` yang hanya 1-step-ahead, fungsi ini
-    menguji error sesuai horizon forecast sebenarnya dan sekaligus membangun
-    residual quantile per horizon untuk kalibrasi interval tahap berikutnya.
-    """
     training_series = get_forecast_training_series()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -271,14 +235,6 @@ def get_multi_horizon_backtest(model_name: str,
 
 @st.cache_data(show_spinner="Menjalankan validasi lintas tahun...")
 def get_cross_year_validation(model_name: str, cutoff_date_str: str) -> pd.DataFrame:
-    """Validasi out-of-sample: latih dari data sebelum `cutoff_date_str`,
-    prediksi maju, bandingkan ke aktual sungguhan (mis. 2025 -> 2026).
-    Return DataFrame kosong jika tidak ada data aktual setelah cutoff.
-
-    CATATAN: fungsi ini secara SENGAJA memakai deret PENUH (get_daily_actual_series,
-    bukan get_forecast_training_series) -- karena di sinilah data sesudah cutoff
-    justru dibutuhkan sbg AKTUAL PEMBANDING, bukan sbg data latihan model.
-    """
     import pandas as pd
     daily_actual = get_daily_actual_series()
     cutoff = pd.Timestamp(cutoff_date_str)
@@ -290,15 +246,11 @@ def get_cross_year_validation(model_name: str, cutoff_date_str: str) -> pd.DataF
 
 
 def get_available_years() -> list:
-    """Daftar tahun yang tersedia di data (utk pemilihan cutoff validasi lintas tahun)."""
     daily_actual = get_daily_actual_series()
     return sorted(daily_actual.index.year.unique().tolist())
 
 
 def get_all_data() -> dict:
-    """Panggilan tunggal yang memuat semua bundel data -- dipakai app.py utk
-    memicu loading di awal (dgn spinner) sebelum pengguna berpindah halaman.
-    """
     return {
         "cleaning": get_cleaning_result(),
         "data_quality": get_data_quality(),
