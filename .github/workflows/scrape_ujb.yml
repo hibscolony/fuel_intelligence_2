@@ -15,6 +15,10 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    env:
+      # Pastikan import `src.*` / `config` deterministik baik lewat pytest
+      # maupun script validator, independen dari import-mode pytest/runner.
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -64,7 +68,7 @@ jobs:
       - name: Run source-aware regression tests
         if: github.event_name == 'workflow_dispatch'
         run: |
-          pytest -q \
+          python -m pytest -q \
             tests/test_source_reconciliation.py \
             tests/test_forecast_data.py \
             tests/test_ujb_unit_mapping.py
