@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install scraper dependencies
         run: |
           pip install playwright pandas
           playwright install --with-deps chromium
@@ -38,7 +38,9 @@ jobs:
           UJB_LOOKBACK_DAYS: "7"
         run: python ujb_scrape_runner.py
 
-      - name: Commit & push kalau ada data baru
+      # Simpan data UJB dulu. Kalau validasi hybrid setelah ini menemukan bug,
+      # hasil scrape tetap tidak hilang dari branch.
+      - name: Commit & push kalau ada data UJB baru
         run: |
           git config user.name "ujb-scraper-bot"
           git config user.email "actions@github.com"
@@ -47,8 +49,51 @@ jobs:
             data/raw/ujb_history.csv \
             data/raw/ujb_filter_diagnostics.json
           if git diff --cached --quiet; then
-            echo "Tidak ada perubahan data, skip commit."
+            echo "Tidak ada perubahan data UJB, skip commit."
           else
             git commit -m "chore: update UJB snapshot and history [skip ci]"
+            git push
+          fi
+
+      # Validasi hybrid sengaja hanya untuk manual dispatch. Scheduled scraper
+      # tetap ringan dan tidak menjalankan seluruh dependency/test tiap 30 menit.
+      - name: Install hybrid validation dependencies
+        if: github.event_name == 'workflow_dispatch'
+        run: pip install -r requirements.txt
+
+      - name: Run source-aware regression tests
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          pytest -q \
+            tests/test_source_reconciliation.py \
+            tests/test_forecast_data.py \
+            tests/test_ujb_unit_mapping.py
+
+      - name: Validate real hybrid pipeline
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          FUEL_DATA_SOURCE: hybrid
+        run: python scripts/validate_hybrid_sources.py
+
+      - name: Commit hybrid validation outputs
+        if: ${{ always() && github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ ! -f data/processed/source_reconciliation_audit.csv ] && \
+             [ ! -f data/processed/hybrid_validation_summary.json ]; then
+            echo "Tidak ada output validator untuk disimpan."
+            exit 0
+          fi
+
+          git config user.name "hybrid-validator-bot"
+          git config user.email "actions@github.com"
+          git add \
+            data/processed/source_reconciliation_audit.csv \
+            data/processed/hybrid_validation_summary.json 2>/dev/null || true
+
+          if git diff --cached --quiet; then
+            echo "Output validasi tidak berubah."
+          else
+            git commit -m "chore: update hybrid validation audit [skip ci]"
+            git pull --rebase
             git push
           fi
