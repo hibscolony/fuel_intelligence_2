@@ -23,7 +23,6 @@ def test_ujb_replaces_excel_for_dispenser_categories_on_covered_dates():
     result = reconcile_excel_and_ujb(excel, ujb)
     selected = result.selected_df
 
-    # Historical HT stays Excel; overlapping HT/BUS use UJB; RTGC always Excel.
     assert len(selected) == 4
     assert ((selected["date"] == pd.Timestamp("2026-08-17")) & (selected["source_system"] == "EXCEL")).any()
     assert ((selected["date"] == pd.Timestamp("2026-08-18")) & (selected["equipment_category"] == "HEAD_TRUCK") & (selected["source_system"] == "UJB")).any()
@@ -66,6 +65,42 @@ def test_multiple_ujb_events_same_unit_day_are_preserved():
     result = reconcile_excel_and_ujb(excel, ujb)
     assert len(result.selected_df) == 2
     assert result.selected_df["source_event_key"].nunique() == 2
+
+
+def test_forklift_ujb_is_not_added_when_excel_support_exists_same_day():
+    excel = _df([
+        {"date": "2026-08-18", "equipment_category": "SUPPORT", "equipment_id": "17", "fuel_liter": 30.0},
+        {"date": "2026-08-18", "equipment_category": "SUPPORT", "equipment_id": "RS-01", "fuel_liter": 90.0},
+    ])
+    ujb = _df([
+        {"date": "2026-08-18", "equipment_category": "FORKLIFT", "equipment_id": "17", "fuel_liter": 20.0, "source_event_key": "fork-1"},
+    ])
+
+    result = reconcile_excel_and_ujb(excel, ujb)
+    assert len(result.selected_df) == 2
+    assert set(result.selected_df["source_system"]) == {"EXCEL"}
+
+    suppressed = result.audit_df[
+        (result.audit_df["source_system"] == "UJB")
+        & (result.audit_df["selection_reason"] == "UJB_FORKLIFT_SUPPRESSED_EXCEL_SUPPORT_BRIDGE")
+    ].iloc[0]
+    assert suppressed["suppressed_rows"] == 1
+    assert suppressed["suppressed_liter"] == 20.0
+
+
+def test_forklift_ujb_is_used_when_excel_support_missing():
+    excel = _df([
+        {"date": "2026-08-18", "equipment_category": "RTGC", "equipment_id": "01", "fuel_liter": 500.0},
+    ])
+    ujb = _df([
+        {"date": "2026-08-18", "equipment_category": "FORKLIFT", "equipment_id": "17", "fuel_liter": 20.0},
+    ])
+
+    result = reconcile_excel_and_ujb(excel, ujb)
+    forklift = result.selected_df[result.selected_df["equipment_category"] == "FORKLIFT"]
+    assert len(forklift) == 1
+    assert forklift.iloc[0]["source_system"] == "UJB"
+    assert forklift.iloc[0]["source_selection_reason"] == "UJB_FORKLIFT_FALLBACK_NO_EXCEL_SUPPORT"
 
 
 def test_audit_reports_suppressed_excel_volume():
