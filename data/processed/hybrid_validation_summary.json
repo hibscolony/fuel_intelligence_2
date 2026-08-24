@@ -1,0 +1,98 @@
+{
+  "generated_at_utc": "2026-08-24T04:24:23.063170+00:00",
+  "data_source_mode": "hybrid",
+  "passed": true,
+  "hybrid_selected_rows": 87822,
+  "hybrid_selected_liter": 10507264.550200999,
+  "audit_selected_liter": 10507264.550201,
+  "selected_liter_abs_diff": 1.862645149230957e-09,
+  "source_summary": {
+    "EXCEL": {
+      "rows": 87230,
+      "fuel_liter": 10471030.610201001,
+      "valid_rows": 74278
+    },
+    "UJB": {
+      "rows": 592,
+      "fuel_liter": 36233.939999999995,
+      "valid_rows": 586
+    }
+  },
+  "ujb_history": {
+    "rows": 597,
+    "unique_event_keys": 597,
+    "coverage_start": "2026-08-18",
+    "coverage_end": "2026-08-24",
+    "coverage_days": 7
+  },
+  "violations": {
+    "direct_category_multi_source_groups": 0,
+    "duplicate_selected_ujb_event_key_rows": 0,
+    "unapproved_ujb_selected_rows": 0,
+    "blank_source_selection_reason_rows": 0,
+    "selected_liter_audit_mismatch": false
+  },
+  "duplicate_event_key_examples": [],
+  "source_reason_summary": [
+    {
+      "source_system": "EXCEL",
+      "selection_reason": "EXCEL_NON_UJB_CATEGORY",
+      "input_rows": 35126,
+      "selected_rows": 35126,
+      "suppressed_rows": 0,
+      "input_liter": 6794365.210201,
+      "selected_liter": 6794365.210201,
+      "suppressed_liter": 0.0
+    },
+    {
+      "source_system": "EXCEL",
+      "selection_reason": "EXCEL_OUTSIDE_UJB_COVERAGE",
+      "input_rows": 49832,
+      "selected_rows": 49832,
+      "suppressed_rows": 0,
+      "input_liter": 3534326.95,
+      "selected_liter": 3534326.95,
+      "suppressed_liter": 0.0
+    },
+    {
+      "source_system": "EXCEL",
+      "selection_reason": "EXCEL_SUPPORT_RETAINED_FORKLIFT_BRIDGE",
+      "input_rows": 2272,
+      "selected_rows": 2272,
+      "suppressed_rows": 0,
+      "input_liter": 142338.45,
+      "selected_liter": 142338.45,
+      "suppressed_liter": 0.0
+    },
+    {
+      "source_system": "UJB",
+      "selection_reason": "UJB_FORKLIFT_FALLBACK_NO_EXCEL_SUPPORT",
+      "input_rows": 7,
+      "selected_rows": 7,
+      "suppressed_rows": 0,
+      "input_liter": 176.47,
+      "selected_liter": 176.47,
+      "suppressed_liter": 0.0
+    },
+    {
+      "source_system": "UJB",
+      "selection_reason": "UJB_PREFERRED_ON_COVERED_DATE",
+      "input_rows": 585,
+      "selected_rows": 585,
+      "suppressed_rows": 0,
+      "input_liter": 36057.47,
+      "selected_liter": 36057.47,
+      "suppressed_liter": 0.0
+    },
+    {
+      "source_system": "UJB",
+      "selection_reason": "UJB_UNAPPROVED_CATEGORY_SUPPRESSED",
+      "input_rows": 5,
+      "selected_rows": 0,
+      "suppressed_rows": 5,
+      "input_liter": 186.06,
+      "selected_liter": 0.0,
+      "suppressed_liter": 186.06
+    }
+  ]
+}
