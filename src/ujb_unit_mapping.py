@@ -9,7 +9,8 @@ Aturan di sini dipakai di dua tempat:
 Mapping yang sudah dikonfirmasi operasional:
 - HT -> HEAD_TRUCK
 - BUS -> BUS
-- HILUX / RANGGA / INOVA / plat B xxxx ... -> KEND_OPS
+- HILUX / RANGGA / INOVA / ENGINEERING -> KEND_OPS
+- plat B xxxx ... / AD xxxx ... -> KEND_OPS
 - FRK -> FORKLIFT
 - RFK -> FORKLIFT (typo dari FRK)
 
@@ -26,16 +27,20 @@ PREFIX_TO_CATEGORY = {
     "HILUX": "KEND_OPS",
     "RANGGA": "KEND_OPS",
     "INOVA": "KEND_OPS",
+    "ENGINEERING": "KEND_OPS",
     "FRK": "FORKLIFT",
     "RFK": "FORKLIFT",
     "ELF": "ELF",
 }
 
-KEND_OPS_NAMED_PREFIXES = {"HILUX", "RANGGA", "INOVA"}
+KEND_OPS_NAMED_PREFIXES = {"HILUX", "RANGGA", "INOVA", "ENGINEERING"}
 
-# Contoh yang sudah muncul di data: "B 8137 OH".
-# Sengaja cukup konservatif agar prefix "B" biasa tidak otomatis dianggap plat.
-_LICENSE_PLATE_RE = re.compile(r"^B\s+\d{1,4}\s+[A-Z]{1,3}$", re.IGNORECASE)
+# Prefix plat yang sudah dikonfirmasi muncul pada kendaraan operasional UJB.
+# Dibuat konservatif agar prefix huruf lain tidak otomatis diklasifikasikan.
+_LICENSE_PLATE_RE = re.compile(
+    r"^(?:B|AD)\s+\d{1,4}\s+[A-Z]{1,3}$",
+    re.IGNORECASE,
+)
 
 
 def _clean_spaces(value: object) -> str:
@@ -46,10 +51,10 @@ def parse_ujb_unit(unit: object) -> tuple[str, str]:
     """Parse string mentah kolom ``Unit`` menjadi (category, equipment_id).
 
     Untuk KEND_OPS berbasis nama/plat, equipment_id dipertahankan lengkap
-    (mis. ``HILUX 02``, ``INOVA DM``, atau ``B 8137 OH``) agar identifier pendek
-    tidak bentrok antar jenis kendaraan. Untuk FRK/RFK, ID numeriknya
-    dipertahankan sehingga ``FRK 26`` dan ``RFK 26`` menjadi unit kanonik yang
-    sama: FORKLIFT / 26.
+    (mis. ``HILUX 02``, ``INOVA DM``, ``ENGINEERING``, ``B 8137 OH``, atau
+    ``AD 8137 OH``) agar identifier pendek tidak bentrok antar jenis kendaraan.
+    Untuk FRK/RFK, ID numeriknya dipertahankan sehingga ``FRK 26`` dan
+    ``RFK 26`` menjadi unit kanonik yang sama: FORKLIFT / 26.
     """
     raw = _clean_spaces(unit)
     if not raw:
@@ -79,21 +84,25 @@ def normalize_ujb_category_and_id(category: object, equipment_id: object) -> tup
     """Normalisasi output CSV UJB lama yang sudah telanjur diparse.
 
     Contoh legacy CSV:
-      HILUX, 02     -> KEND_OPS, HILUX 02
-      RANGGA, 05    -> KEND_OPS, RANGGA 05
-      INOVA, DM     -> KEND_OPS, INOVA DM
-      B, 8137 OH    -> KEND_OPS, B 8137 OH
-      RFK, 26       -> FORKLIFT, 26
-      FRK, 26       -> FORKLIFT, 26
+      HILUX, 02          -> KEND_OPS, HILUX 02
+      RANGGA, 05         -> KEND_OPS, RANGGA 05
+      INOVA, DM          -> KEND_OPS, INOVA DM
+      ENGINEERING, ...   -> KEND_OPS, ENGINEERING ...
+      B, 8137 OH         -> KEND_OPS, B 8137 OH
+      AD, 8137 OH        -> KEND_OPS, AD 8137 OH
+      RFK, 26            -> FORKLIFT, 26
+      FRK, 26            -> FORKLIFT, 26
     """
     cat = _clean_spaces(category).upper()
     eq = _clean_spaces(equipment_id)
 
     if cat in KEND_OPS_NAMED_PREFIXES:
+        if cat == "ENGINEERING" and (not eq or eq.upper() == "ENGINEERING"):
+            return "KEND_OPS", "ENGINEERING"
         return "KEND_OPS", f"{cat} {eq}".strip()
 
-    if cat == "B":
-        candidate = f"B {eq}".strip()
+    if cat in {"B", "AD"}:
+        candidate = f"{cat} {eq}".strip()
         if _LICENSE_PLATE_RE.fullmatch(candidate):
             return "KEND_OPS", candidate.upper()
 
