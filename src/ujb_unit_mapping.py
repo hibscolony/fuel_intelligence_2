@@ -9,7 +9,7 @@ Aturan di sini dipakai di dua tempat:
 Mapping yang sudah dikonfirmasi operasional:
 - HT -> HEAD_TRUCK
 - BUS -> BUS
-- HILUX / RANGGA / plat B xxxx ... -> KEND_OPS
+- HILUX / RANGGA / INOVA / plat B xxxx ... -> KEND_OPS
 - FRK -> FORKLIFT
 - RFK -> FORKLIFT (typo dari FRK)
 
@@ -25,12 +25,13 @@ PREFIX_TO_CATEGORY = {
     "BUS": "BUS",
     "HILUX": "KEND_OPS",
     "RANGGA": "KEND_OPS",
+    "INOVA": "KEND_OPS",
     "FRK": "FORKLIFT",
     "RFK": "FORKLIFT",
     "ELF": "ELF",
 }
 
-KEND_OPS_NAMED_PREFIXES = {"HILUX", "RANGGA"}
+KEND_OPS_NAMED_PREFIXES = {"HILUX", "RANGGA", "INOVA"}
 
 # Contoh yang sudah muncul di data: "B 8137 OH".
 # Sengaja cukup konservatif agar prefix "B" biasa tidak otomatis dianggap plat.
@@ -45,9 +46,10 @@ def parse_ujb_unit(unit: object) -> tuple[str, str]:
     """Parse string mentah kolom ``Unit`` menjadi (category, equipment_id).
 
     Untuk KEND_OPS berbasis nama/plat, equipment_id dipertahankan lengkap
-    (mis. ``HILUX 02`` atau ``B 8137 OH``) agar nomor pendek tidak bentrok
-    antar jenis kendaraan. Untuk FRK/RFK, ID numeriknya dipertahankan sehingga
-    ``FRK 26`` dan ``RFK 26`` menjadi unit kanonik yang sama: FORKLIFT / 26.
+    (mis. ``HILUX 02``, ``INOVA DM``, atau ``B 8137 OH``) agar identifier pendek
+    tidak bentrok antar jenis kendaraan. Untuk FRK/RFK, ID numeriknya
+    dipertahankan sehingga ``FRK 26`` dan ``RFK 26`` menjadi unit kanonik yang
+    sama: FORKLIFT / 26.
     """
     raw = _clean_spaces(unit)
     if not raw:
@@ -79,6 +81,7 @@ def normalize_ujb_category_and_id(category: object, equipment_id: object) -> tup
     Contoh legacy CSV:
       HILUX, 02     -> KEND_OPS, HILUX 02
       RANGGA, 05    -> KEND_OPS, RANGGA 05
+      INOVA, DM     -> KEND_OPS, INOVA DM
       B, 8137 OH    -> KEND_OPS, B 8137 OH
       RFK, 26       -> FORKLIFT, 26
       FRK, 26       -> FORKLIFT, 26
