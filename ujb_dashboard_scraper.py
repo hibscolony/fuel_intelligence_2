@@ -35,6 +35,8 @@ from typing import Optional
 import pandas as pd
 from playwright.sync_api import sync_playwright, Page
 
+from src.ujb_unit_mapping import parse_ujb_unit
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ujb_scraper")
 
@@ -43,15 +45,6 @@ REPORT_URL = f"{BASE_URL}/report/custom_jict"
 
 USERNAME = os.environ.get("UJB_USERNAME")
 PASSWORD = os.environ.get("UJB_PASSWORD")
-
-# Mapping prefix "Unit" di laporan vendor -> equipment_category di pipeline dashboard.
-# Sesuaikan/lengkapi kalau ternyata ada kategori lain (RTGC, FORKLIFT, dll) yang
-# formatnya beda dari yang sudah dicek (HT xxx -> HEAD_TRUCK).
-UNIT_PREFIX_TO_CATEGORY = {
-    "HT": "HEAD_TRUCK",
-    "BUS": "BUS",
-    # TODO: tambahkan mapping lain kalau muncul, mis. "RTGC": "RTGC", "FL": "FORKLIFT"
-}
 
 
 def login(page: Page, username: str, password: str) -> None:
@@ -83,19 +76,12 @@ def login(page: Page, username: str, password: str) -> None:
 
 
 def _parse_unit(unit: str) -> tuple[str, str]:
-    """Pecah string 'Unit' dari laporan (mis. 'HT 136') jadi
-    (equipment_category, equipment_id) sesuai skema dashboard.
-    Fallback: kalau prefix tidak dikenali, category = prefix apa adanya
-    dan equipment_id = string lengkap, supaya tidak ada data yang hilang
-    diam-diam -- cukup mudah dicari di CSV hasil untuk dilengkapi mapping-nya.
+    """Compatibility wrapper untuk parser taxonomy UJB terpusat.
+
+    Aturan kanonik ada di ``src.ujb_unit_mapping.parse_ujb_unit`` supaya scraper
+    dan loader CSV lama memakai mapping yang sama.
     """
-    unit = unit.strip()
-    match = re.match(r"([A-Za-z]+)\s*(.+)", unit)
-    if not match:
-        return unit, unit
-    prefix, rest = match.group(1).upper(), match.group(2).strip()
-    category = UNIT_PREFIX_TO_CATEGORY.get(prefix, prefix)
-    return category, rest
+    return parse_ujb_unit(unit)
 
 
 def set_entries_per_page_max(page: Page) -> None:
