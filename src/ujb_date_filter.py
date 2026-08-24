@@ -1,8 +1,9 @@
 """Robust date-range handling for the UJB dashboard scraper.
 
 The UJB report UI can expose dates through native inputs, paired text inputs,
-or the common jQuery daterangepicker plugin. This module tries those variants
-without assuming DD/MM/YYYY versus MM/DD/YYYY.
+or the common jQuery daterangepicker plugin. UJB JICT is confirmed to use
+``YYYY/MM/DD`` for its visible date format; legacy MDY/DMY handling is kept as
+fallback so the scraper remains defensive if the vendor UI changes.
 """
 from __future__ import annotations
 
@@ -12,21 +13,25 @@ from typing import Any
 
 import pandas as pd
 
+_YMD_SLASH_TOKEN_RE = re.compile(r"(?P<y>\d{4})/(?P<m>\d{1,2})/(?P<d>\d{1,2})")
 _DATE_TOKEN_RE = re.compile(r"(?P<a>\d{1,2})/(?P<b>\d{1,2})/(?P<y>\d{4})")
 _DATE_META_RE = re.compile(r"date|tanggal|range|period|periode|from|to|start|end|awal|akhir", re.I)
 _ACTION_RE = re.compile(r"filter|apply|search|cari|tampil|proses|submit|go", re.I)
 
 
 def infer_slash_date_order(current_value: str, reference_date: date | None = None) -> str:
-    """Infer ``MDY`` versus ``DMY`` from an existing UI value.
+    """Infer ``YMD``, ``MDY`` or ``DMY`` from an existing UI value.
 
-    If one side is >12 the answer is deterministic. For ambiguous values, the
-    token closest to ``reference_date`` (normally today) is used as a tie-break.
-    Bootstrap daterangepicker defaults to MDY, so MDY is the final fallback.
+    UJB JICT is confirmed to use YMD slash (for example ``2026/08/24``).
+    MDY/DMY inference is retained as a fallback for vendor UI changes.
     """
-    tokens = list(_DATE_TOKEN_RE.finditer(current_value or ""))
+    current = current_value or ""
+    if _YMD_SLASH_TOKEN_RE.search(current):
+        return "YMD"
+
+    tokens = list(_DATE_TOKEN_RE.finditer(current))
     if not tokens:
-        return "MDY"
+        return "YMD"
 
     for match in tokens:
         a = int(match.group("a"))
@@ -51,7 +56,28 @@ def infer_slash_date_order(current_value: str, reference_date: date | None = Non
         if best is not None:
             return best[1]
 
-    return "MDY"
+    return "YMD"
+
+
+def format_single_date_like_current(current_value: str, requested_date: str) -> str:
+    """Format satu tanggal mengikuti style field UJB yang sedang tampil."""
+    current = (current_value or "").strip()
+    ts = pd.Timestamp(requested_date)
+
+    if _YMD_SLASH_TOKEN_RE.search(current):
+        return ts.strftime("%Y/%m/%d")
+    if _DATE_TOKEN_RE.search(current):
+        order = infer_slash_date_order(current, reference_date=ts.date())
+        if order == "DMY":
+            return ts.strftime("%d/%m/%Y")
+        if order == "MDY":
+            return ts.strftime("%m/%d/%Y")
+        return ts.strftime("%Y/%m/%d")
+    if re.search(r"\d{4}-\d{1,2}-\d{1,2}", current):
+        return ts.strftime("%Y-%m-%d")
+
+    # Confirmed UJB JICT fallback.
+    return ts.strftime("%Y/%m/%d")
 
 
 def format_range_like_current(
@@ -65,16 +91,21 @@ def format_range_like_current(
     start = pd.Timestamp(date_from)
     end = pd.Timestamp(date_to)
 
-    if _DATE_TOKEN_RE.search(current):
+    if _YMD_SLASH_TOKEN_RE.search(current):
+        left, right = start.strftime("%Y/%m/%d"), end.strftime("%Y/%m/%d")
+    elif _DATE_TOKEN_RE.search(current):
         order = infer_slash_date_order(current, reference_date=reference_date)
         if order == "DMY":
             left, right = start.strftime("%d/%m/%Y"), end.strftime("%d/%m/%Y")
-        else:
+        elif order == "MDY":
             left, right = start.strftime("%m/%d/%Y"), end.strftime("%m/%d/%Y")
+        else:
+            left, right = start.strftime("%Y/%m/%d"), end.strftime("%Y/%m/%d")
     elif re.search(r"\d{4}-\d{1,2}-\d{1,2}", current):
         left, right = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
     else:
-        left, right = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+        # Confirmed UJB JICT fallback.
+        left, right = start.strftime("%Y/%m/%d"), end.strftime("%Y/%m/%d")
 
     if re.search(r"\bto\b", current, re.I):
         separator = " to "
@@ -178,13 +209,18 @@ def _try_jquery_daterangepicker(page: Any, date_from: str, date_to: str) -> str 
                     try { picker = $(el).data('daterangepicker'); } catch (_) {}
                     if (!picker) continue;
                     try {
-                        picker.setStartDate(start);
-                        picker.setEndDate(end);
-                        const fmt = picker.locale && picker.locale.format ? picker.locale.format : 'MM/DD/YYYY';
+                        const fmt = picker.locale && picker.locale.format ? picker.locale.format : 'YYYY/MM/DD';
+                        const separator = picker.locale && picker.locale.separator ? picker.locale.separator : ' - ';
+                        const startMoment = window.moment ? window.moment(start, 'YYYY-MM-DD', true) : start;
+                        const endMoment = window.moment ? window.moment(end, 'YYYY-MM-DD', true) : end;
+
+                        picker.setStartDate(startMoment);
+                        picker.setEndDate(endMoment);
+
                         if (window.moment) {
-                            el.value = window.moment(start, 'YYYY-MM-DD').format(fmt) +
-                                (picker.locale && picker.locale.separator ? picker.locale.separator : ' - ') +
-                                window.moment(end, 'YYYY-MM-DD').format(fmt);
+                            el.value = startMoment.format(fmt) + separator + endMoment.format(fmt);
+                        } else {
+                            el.value = start.replaceAll('-', '/') + separator + end.replaceAll('-', '/');
                         }
                         el.dispatchEvent(new Event('input', {bubbles: true}));
                         el.dispatchEvent(new Event('change', {bubbles: true}));
@@ -212,7 +248,7 @@ def _try_jquery_daterangepicker(page: Any, date_from: str, date_to: str) -> str 
 
 def apply_date_range_robust(page: Any, date_from: str, date_to: str) -> str:
     """Apply a requested window using the most deterministic available method."""
-    # 1) Native date inputs.
+    # 1) Native date inputs require ISO YYYY-MM-DD by HTML specification.
     native = page.locator('input[type="date"]')
     if native.count() >= 2:
         native.nth(0).fill(date_from)
@@ -220,9 +256,7 @@ def apply_date_range_robust(page: Any, date_from: str, date_to: str) -> str:
         trigger = _trigger_filter(page, native.nth(1))
         return f"two_native_dates:{trigger}"
 
-    # 2) Common jQuery daterangepicker plugin. This is intentionally before
-    # generic text filling because filling only the visible input often does not
-    # update the plugin's internal start/end state.
+    # 2) Common jQuery daterangepicker plugin. Drive plugin state directly.
     plugin_strategy = _try_jquery_daterangepicker(page, date_from, date_to)
     if plugin_strategy:
         return plugin_strategy
@@ -241,12 +275,20 @@ def apply_date_range_robust(page: Any, date_from: str, date_to: str) -> str:
         if end_input is None and end_re.search(meta):
             end_input = loc
     if start_input is not None and end_input is not None:
-        _set_value(start_input, date_from)
-        _set_value(end_input, date_to)
+        try:
+            current_start = start_input.input_value()
+        except Exception:
+            current_start = ""
+        try:
+            current_end = end_input.input_value()
+        except Exception:
+            current_end = ""
+        _set_value(start_input, format_single_date_like_current(current_start, date_from))
+        _set_value(end_input, format_single_date_like_current(current_end, date_to))
         trigger = _trigger_filter(page, end_input)
         return f"named_pair:{trigger}"
 
-    # 4) Visible single range input. Infer MDY/DMY from the value already shown.
+    # 4) Visible single range input. UJB is YYYY/MM/DD; other orders remain fallback.
     ref = pd.Timestamp(date_to).date()
     for i in range(all_inputs.count()):
         loc = all_inputs.nth(i)
@@ -258,7 +300,11 @@ def apply_date_range_robust(page: Any, date_from: str, date_to: str) -> str:
                 continue
             meta = _metadata(loc)
             current = loc.input_value()
-            if not (_DATE_META_RE.search(meta) or _DATE_TOKEN_RE.search(current or "")):
+            if not (
+                _DATE_META_RE.search(meta)
+                or _YMD_SLASH_TOKEN_RE.search(current or "")
+                or _DATE_TOKEN_RE.search(current or "")
+            ):
                 continue
             requested = format_range_like_current(
                 current, date_from, date_to, reference_date=ref
