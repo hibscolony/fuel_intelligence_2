@@ -12,6 +12,10 @@ the *hybrid total* on dates where Excel SUPPORT is present, preventing a hidden
 double count. The UJB events remain available in UJB history for operational
 analysis and are used when Excel SUPPORT is absent.
 
+MODUL uses the inverse bridge: Excel remains authoritative on dates where an
+Excel MODUL row exists. UJB MODUL (for example GENSET transactions) is retained
+as fallback only when Excel MODUL is absent on that date.
+
 Unknown/new UJB categories are quarantined from the hybrid total until their
 source relationship is explicitly approved. They remain visible in the source
 audit/history so a new vendor unit type can never inflate totals silently.
@@ -32,6 +36,7 @@ UJB_PREFERRED_CATEGORIES = frozenset({
 })
 FORKLIFT_CATEGORY = "FORKLIFT"
 EXCEL_SUPPORT_CATEGORY = "SUPPORT"
+MODUL_CATEGORY = "MODUL"
 
 
 @dataclass
@@ -116,7 +121,8 @@ def reconcile_excel_and_ujb(
     -----------------------
     - HEAD_TRUCK / BUS / ELF / KEND_OPS: UJB replaces Excel on dates actually
       covered by UJB history.
-    - Non-UJB Excel categories: always retained.
+    - Non-UJB Excel categories: retained unless a dedicated bridge says
+      otherwise.
     - UJB coverage gaps: Excel is retained; a min/max range alone is never
       treated as proof of coverage.
 
@@ -126,11 +132,16 @@ def reconcile_excel_and_ujb(
     Excel SUPPORT exists, UJB FORKLIFT is *not* added to the hybrid total.
     If Excel SUPPORT is absent, UJB FORKLIFT is retained as fallback.
 
+    MODUL bridge rule
+    -----------------
+    Excel MODUL remains authoritative when present on a date. UJB MODUL is
+    retained only when no Excel MODUL row exists on that date.
+
     New-category guard
     ------------------
-    UJB categories outside the approved direct set and FORKLIFT are suppressed
-    from the hybrid total until explicitly classified. They remain in history
-    and the audit table for review.
+    UJB categories outside the approved direct set, FORKLIFT, and MODUL are
+    suppressed from the hybrid total until explicitly classified. They remain
+    in history and the audit table for review.
     """
     preferred = {str(c).strip().upper() for c in preferred_categories}
     excel = _annotate_source(excel_df, "EXCEL")
@@ -148,6 +159,9 @@ def reconcile_excel_and_ujb(
     )
     excel_support_dates = set(
         excel_dates.loc[excel_categories.eq(EXCEL_SUPPORT_CATEGORY)].dropna().tolist()
+    ) if not excel.empty else set()
+    excel_modul_dates = set(
+        excel_dates.loc[excel_categories.eq(MODUL_CATEGORY)].dropna().tolist()
     ) if not excel.empty else set()
 
     audit_frames: list[pd.DataFrame] = []
@@ -168,6 +182,9 @@ def reconcile_excel_and_ujb(
         reasons.loc[excel_categories.eq(EXCEL_SUPPORT_CATEGORY)] = (
             "EXCEL_SUPPORT_RETAINED_FORKLIFT_BRIDGE"
         )
+        reasons.loc[excel_categories.eq(MODUL_CATEGORY)] = (
+            "EXCEL_MODUL_AUTHORITATIVE_WHEN_PRESENT"
+        )
 
         excel["source_selection_reason"] = reasons
         selected_frames.append(excel.loc[~suppress_excel].copy())
@@ -183,13 +200,19 @@ def reconcile_excel_and_ujb(
 
         direct_mask = ujb_categories.isin(preferred)
         forklift_mask = ujb_categories.eq(FORKLIFT_CATEGORY)
-        approved_mask = direct_mask | forklift_mask
+        modul_mask = ujb_categories.eq(MODUL_CATEGORY)
+        approved_mask = direct_mask | forklift_mask | modul_mask
         unknown_mask = ~approved_mask
 
         forklift_overlaps_excel_support = forklift_mask & ujb_dates.isin(
             excel_support_dates
         )
-        suppress_ujb = forklift_overlaps_excel_support | unknown_mask
+        modul_overlaps_excel = modul_mask & ujb_dates.isin(excel_modul_dates)
+        suppress_ujb = (
+            forklift_overlaps_excel_support
+            | modul_overlaps_excel
+            | unknown_mask
+        )
 
         reasons = pd.Series(
             "UJB_UNAPPROVED_CATEGORY_SUPPRESSED", index=ujb.index, dtype="object"
@@ -200,6 +223,12 @@ def reconcile_excel_and_ujb(
         )
         reasons.loc[forklift_overlaps_excel_support] = (
             "UJB_FORKLIFT_SUPPRESSED_EXCEL_SUPPORT_BRIDGE"
+        )
+        reasons.loc[modul_mask & ~modul_overlaps_excel] = (
+            "UJB_MODUL_FALLBACK_NO_EXCEL_MODUL"
+        )
+        reasons.loc[modul_overlaps_excel] = (
+            "UJB_MODUL_SUPPRESSED_EXCEL_MODUL_PRESENT"
         )
 
         ujb["source_selection_reason"] = reasons
