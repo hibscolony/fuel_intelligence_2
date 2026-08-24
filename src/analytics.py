@@ -32,6 +32,12 @@ from src.forecast_integration import (
     load_forecast_results, compute_forecast_errors, compute_overall_metrics,
     compute_rolling_performance, detect_model_drift_warning,
 )
+from src.forecast_evaluation import (
+    DEFAULT_EVAL_HORIZONS,
+    build_multi_horizon_backtest as _build_multi_horizon_backtest,
+    summarize_multi_horizon_backtest as _summarize_multi_horizon_backtest,
+    residual_quantiles_by_horizon as _residual_quantiles_by_horizon,
+)
 from src.anomaly_detection import detect_anomalies, summarize_anomalies
 from src.change_point import detect_all_change_points, summarize_change_points
 from src.health_score import build_health_score_table
@@ -236,6 +242,31 @@ def get_model_backtest(model_name: str, backtest_days: int = 60) -> dict:
         drift_warning = detect_model_drift_warning(rolling_perf)
     return {"forecast_df": df_err, "summary": summary, "rolling_perf": rolling_perf,
             "drift_warning": drift_warning}
+
+
+@st.cache_data(show_spinner="Menjalankan evaluasi multi-horizon...")
+def get_multi_horizon_backtest(model_name: str,
+                               horizons: tuple[int, ...] = DEFAULT_EVAL_HORIZONS,
+                               evaluation_days: int = 180,
+                               origin_step_days: int = 7) -> dict:
+    """Rolling-origin evaluation D+1/D+3/D+7/... secara terpisah.
+
+    Berbeda dari ``get_model_backtest`` yang hanya 1-step-ahead, fungsi ini
+    menguji error sesuai horizon forecast sebenarnya dan sekaligus membangun
+    residual quantile per horizon untuk kalibrasi interval tahap berikutnya.
+    """
+    training_series = get_forecast_training_series()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        df = _build_multi_horizon_backtest(
+            training_series, model_name,
+            horizons=horizons,
+            evaluation_days=evaluation_days,
+            origin_step_days=origin_step_days,
+        )
+        summary = _summarize_multi_horizon_backtest(df)
+        residual_quantiles = _residual_quantiles_by_horizon(df)
+    return {"backtest_df": df, "summary": summary, "residual_quantiles": residual_quantiles}
 
 
 @st.cache_data(show_spinner="Menjalankan validasi lintas tahun...")
