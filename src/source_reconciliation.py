@@ -5,8 +5,12 @@ operational source for equipment that refuels through the dispenser, but only
 on calendar dates for which UJB actually has source coverage. Excel remains
 the source for non-UJB equipment and for periods before/gaps in UJB history.
 
-The output keeps source provenance on every selected row and returns an audit
-table describing how many rows/liters were selected or suppressed per source.
+Forklift needs one conservative exception: the current Excel parser groups the
+legacy/support block as ``SUPPORT`` while UJB exposes ``FORKLIFT`` explicitly.
+Until the Excel taxonomy is split safely, UJB forklift events are excluded from
+the *hybrid total* on dates where Excel SUPPORT is present, preventing a hidden
+double count. The UJB events remain available in UJB history for operational
+analysis and are used when Excel SUPPORT is absent.
 """
 from __future__ import annotations
 
@@ -20,9 +24,10 @@ UJB_PREFERRED_CATEGORIES = frozenset({
     "HEAD_TRUCK",
     "BUS",
     "ELF",
-    "FORKLIFT",
     "KEND_OPS",
 })
+FORKLIFT_CATEGORY = "FORKLIFT"
+EXCEL_SUPPORT_CATEGORY = "SUPPORT"
 
 
 @dataclass
@@ -63,10 +68,16 @@ def _build_audit(input_frames: list[pd.DataFrame]) -> pd.DataFrame:
     if audit_input.empty:
         return pd.DataFrame(columns=columns)
 
-    audit_input["_fuel"] = pd.to_numeric(audit_input.get("fuel_liter"), errors="coerce").fillna(0.0)
-    audit_input["_selected_liter"] = audit_input["_fuel"].where(audit_input["_selected"], 0.0)
+    audit_input["_fuel"] = pd.to_numeric(
+        audit_input.get("fuel_liter"), errors="coerce"
+    ).fillna(0.0)
+    audit_input["_selected_liter"] = audit_input["_fuel"].where(
+        audit_input["_selected"], 0.0
+    )
     audit_input["_selected_int"] = audit_input["_selected"].astype(int)
-    audit_input["date"] = pd.to_datetime(audit_input["date"], errors="coerce").dt.normalize()
+    audit_input["date"] = pd.to_datetime(
+        audit_input["date"], errors="coerce"
+    ).dt.normalize()
 
     audit = (
         audit_input.groupby(
@@ -97,15 +108,19 @@ def reconcile_excel_and_ujb(
 ) -> SourceReconciliationResult:
     """Select one authoritative source without double counting.
 
-    Rules
-    -----
-    1. UJB rows are retained whenever present.
-    2. For configured dispenser categories, Excel rows are suppressed only on
-       dates that are actually represented in UJB history.
-    3. Excel rows outside UJB coverage are retained for historical continuity.
-    4. Excel rows for non-UJB categories are always retained.
-    5. Missing dates inside the apparent UJB range are *not* assumed covered;
-       Excel is retained on those dates rather than silently creating a gap.
+    Direct precedence rules
+    -----------------------
+    - HEAD_TRUCK / BUS / ELF / KEND_OPS: UJB replaces Excel on dates actually
+      covered by UJB history.
+    - Non-UJB Excel categories: always retained.
+    - UJB coverage gaps: Excel is retained; a min/max range alone is never
+      treated as proof of coverage.
+
+    Forklift bridge rule
+    --------------------
+    Excel still aggregates Forklift into SUPPORT. Therefore on a date where
+    Excel SUPPORT exists, UJB FORKLIFT is *not* added to the hybrid total.
+    If Excel SUPPORT is absent, UJB FORKLIFT is retained as fallback.
     """
     preferred = {str(c).strip().upper() for c in preferred_categories}
     excel = _annotate_source(excel_df, "EXCEL")
@@ -113,46 +128,86 @@ def reconcile_excel_and_ujb(
     coverage = _coverage_dates(ujb)
     coverage_set = set(coverage)
 
+    excel_categories = (
+        excel["equipment_category"].astype(str).str.upper()
+        if not excel.empty else pd.Series(dtype="object")
+    )
+    excel_dates = (
+        excel["date"].dt.normalize()
+        if not excel.empty else pd.Series(dtype="datetime64[ns]")
+    )
+    excel_support_dates = set(
+        excel_dates.loc[excel_categories.eq(EXCEL_SUPPORT_CATEGORY)].dropna().tolist()
+    ) if not excel.empty else set()
+
     audit_frames: list[pd.DataFrame] = []
     selected_frames: list[pd.DataFrame] = []
 
     if not excel.empty:
-        excel_dates = excel["date"].dt.normalize()
-        excel_categories = excel["equipment_category"].astype(str).str.upper()
         is_covered_date = excel_dates.isin(coverage_set)
-        is_ujb_category = excel_categories.isin(preferred)
-        suppress = is_covered_date & is_ujb_category
+        is_direct_ujb_category = excel_categories.isin(preferred)
+        suppress_excel = is_covered_date & is_direct_ujb_category
 
-        reasons = pd.Series("EXCEL_NON_UJB_CATEGORY", index=excel.index, dtype="object")
-        reasons.loc[is_ujb_category & ~is_covered_date] = "EXCEL_OUTSIDE_UJB_COVERAGE"
-        reasons.loc[suppress] = "EXCEL_SUPPRESSED_UJB_PRECEDENCE"
+        reasons = pd.Series(
+            "EXCEL_NON_UJB_CATEGORY", index=excel.index, dtype="object"
+        )
+        reasons.loc[is_direct_ujb_category & ~is_covered_date] = (
+            "EXCEL_OUTSIDE_UJB_COVERAGE"
+        )
+        reasons.loc[suppress_excel] = "EXCEL_SUPPRESSED_UJB_PRECEDENCE"
+        reasons.loc[excel_categories.eq(EXCEL_SUPPORT_CATEGORY)] = (
+            "EXCEL_SUPPORT_RETAINED_FORKLIFT_BRIDGE"
+        )
 
         excel["source_selection_reason"] = reasons
-        selected_excel = excel.loc[~suppress].copy()
-        selected_frames.append(selected_excel)
+        selected_frames.append(excel.loc[~suppress_excel].copy())
 
         audit_excel = excel.copy()
-        audit_excel["_selected"] = ~suppress
+        audit_excel["_selected"] = ~suppress_excel
         audit_excel["_reason"] = reasons
         audit_frames.append(audit_excel)
 
     if not ujb.empty:
         ujb_categories = ujb["equipment_category"].astype(str).str.upper()
-        reasons = pd.Series("UJB_ADDITIONAL_CATEGORY", index=ujb.index, dtype="object")
-        reasons.loc[ujb_categories.isin(preferred)] = "UJB_PREFERRED_ON_COVERED_DATE"
+        ujb_dates = ujb["date"].dt.normalize()
+
+        forklift_mask = ujb_categories.eq(FORKLIFT_CATEGORY)
+        forklift_overlaps_excel_support = forklift_mask & ujb_dates.isin(
+            excel_support_dates
+        )
+        suppress_ujb = forklift_overlaps_excel_support
+
+        reasons = pd.Series(
+            "UJB_ADDITIONAL_CATEGORY", index=ujb.index, dtype="object"
+        )
+        reasons.loc[ujb_categories.isin(preferred)] = (
+            "UJB_PREFERRED_ON_COVERED_DATE"
+        )
+        reasons.loc[forklift_mask & ~forklift_overlaps_excel_support] = (
+            "UJB_FORKLIFT_FALLBACK_NO_EXCEL_SUPPORT"
+        )
+        reasons.loc[forklift_overlaps_excel_support] = (
+            "UJB_FORKLIFT_SUPPRESSED_EXCEL_SUPPORT_BRIDGE"
+        )
+
         ujb["source_selection_reason"] = reasons
-        selected_frames.append(ujb)
+        selected_frames.append(ujb.loc[~suppress_ujb].copy())
 
         audit_ujb = ujb.copy()
-        audit_ujb["_selected"] = True
+        audit_ujb["_selected"] = ~suppress_ujb
         audit_ujb["_reason"] = reasons
         audit_frames.append(audit_ujb)
 
     if selected_frames:
         selected = pd.concat(selected_frames, ignore_index=True, sort=False)
-        sort_cols = [c for c in ["date", "equipment_category", "equipment_id", "event_time"] if c in selected.columns]
+        sort_cols = [
+            c for c in ["date", "equipment_category", "equipment_id", "event_time"]
+            if c in selected.columns
+        ]
         if sort_cols:
-            selected = selected.sort_values(sort_cols, na_position="last").reset_index(drop=True)
+            selected = selected.sort_values(
+                sort_cols, na_position="last"
+            ).reset_index(drop=True)
     else:
         selected = pd.DataFrame()
 
