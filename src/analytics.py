@@ -24,7 +24,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 import config
-from src.data_cleaning import run_cleaning_pipeline, CleaningResult
+from src.data_cleaning import run_cleaning_pipeline
 from src.ujb_source import NoUjbDataError
 from src.data_quality import compute_dq_kpis, detect_missing_dates, detect_zero_consumption_streaks
 from src.forecast_data import (
@@ -42,13 +42,15 @@ from src.forecast_evaluation import (
     build_multi_horizon_backtest as _build_multi_horizon_backtest,
     summarize_multi_horizon_backtest as _summarize_multi_horizon_backtest,
     residual_quantiles_by_horizon as _residual_quantiles_by_horizon,
+    apply_horizon_prediction_interval as _apply_horizon_prediction_interval,
+    rank_model_horizon_summaries as _rank_model_horizon_summaries,
 )
-from src.anomaly_detection import detect_anomalies, summarize_anomalies
-from src.change_point import detect_all_change_points, summarize_change_points
+from src.anomaly_detection import detect_anomalies
+from src.change_point import detect_all_change_points
 from src.health_score import build_health_score_table
-from src.clustering import cluster_all_equipment, summarize_clusters
+from src.clustering import cluster_all_equipment
 from src.saving_simulator import SavingSimulatorInputs, run_saving_scenarios, calculate_l_per_teu
-from src.recommendation_engine import build_recommendations, summarize_recommendations
+from src.recommendation_engine import build_recommendations
 from src.forecasting_models import forecast_for_date as _forecast_for_date
 from src.forecasting_models import build_backtest_dataframe as _build_backtest_dataframe
 from src.forecasting_models import build_cross_year_validation as _build_cross_year_validation
@@ -56,12 +58,7 @@ from src.forecasting_models import build_cross_year_validation as _build_cross_y
 
 @st.cache_data(show_spinner="Memuat data hybrid Excel + UJB...")
 def get_cleaning_result() -> dict:
-    """Jalankan source reconciliation + cleaning dan bungkus hasil sebagai dict.
-
-    Sumber data ditentukan ``config.DATA_SOURCE_MODE`` (default ``hybrid``).
-    Audit source precedence ikut diekspos agar halaman Data Quality dapat
-    menunjukkan row/liter mana yang dipakai atau disuppress dari tiap sumber.
-    """
+    """Jalankan source reconciliation + cleaning dan bungkus hasil sebagai dict."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         try:
@@ -153,9 +150,6 @@ def get_forecast_monitoring() -> dict:
     recent_actual = get_latest_operational_series()
     coverage = get_forecast_coverage()
 
-    # Placeholder seasonal-naive membutuhkan >7 hari. Selama segmen UJB masih
-    # terlalu pendek, placeholder monitoring tetap memakai segmen historis;
-    # recent UJB tetap diekspos terpisah sebagai operational context.
     placeholder_actual = recent_actual if len(recent_actual) >= 14 else training_actual
 
     with warnings.catch_warnings():
@@ -252,11 +246,6 @@ def get_recommendations() -> pd.DataFrame:
     return build_recommendations(health_scores, cleaning["category_monthly_reconciliation"], scenarios)
 
 
-def get_forecast_for_date(model_name: str, target_date) -> dict:
-    training_series = get_forecast_training_series()
-    return _forecast_for_date(training_series, model_name, pd.Timestamp(target_date))
-
-
 @st.cache_data(show_spinner="Menjalankan backtest untuk model terpilih...")
 def get_model_backtest(model_name: str, backtest_days: int = 60) -> dict:
     training_series = get_forecast_training_series()
@@ -288,6 +277,115 @@ def get_multi_horizon_backtest(model_name: str,
         summary = _summarize_multi_horizon_backtest(df)
         residual_quantiles = _residual_quantiles_by_horizon(df)
     return {"backtest_df": df, "summary": summary, "residual_quantiles": residual_quantiles}
+
+
+def get_forecast_for_date(model_name: str, target_date) -> dict:
+    """Forecast explorer dengan empirical interval yang sesuai horizon."""
+    training_series = get_forecast_training_series()
+    target_ts = pd.Timestamp(target_date)
+    result = _forecast_for_date(training_series, model_name, target_ts)
+
+    if result.get("method") != "recursive_forecast":
+        return result
+
+    if "path" in result and isinstance(result["path"], pd.Series):
+        result["path"] = result["path"].clip(lower=0.0)
+        if len(result["path"]):
+            result["point"] = float(result["path"].iloc[-1])
+
+    horizon_days = int(result.get("horizon_days", 0))
+    if horizon_days <= 0:
+        return result
+
+    try:
+        multi = get_multi_horizon_backtest(
+            model_name,
+            horizons=DEFAULT_EVAL_HORIZONS,
+            evaluation_days=180,
+            origin_step_days=14,
+        )
+        interval = _apply_horizon_prediction_interval(
+            result["point"], horizon_days, multi["residual_quantiles"], nonnegative=True
+        )
+        result.update(interval)
+
+        note = (
+            f"Prediction interval memakai residual rolling-origin D+"
+            f"{interval['interval_calibration_horizon']} "
+            f"({interval['interval_n_residuals']} residual)."
+        )
+        if interval["interval_extrapolated"]:
+            note += (
+                " Target melewati horizon kalibrasi maksimum; interval memakai D+90 "
+                "sebagai fallback dan harus dianggap extrapolated."
+            )
+        note += " Kalibrasi residual belum memakai calibration set independen."
+        existing = result.get("warning")
+        result["warning"] = f"{existing} {note}".strip() if existing else note
+    except Exception as exc:
+        result["interval_method"] = "legacy_d1_fallback"
+        result["interval_calibration_error"] = f"{type(exc).__name__}: {exc}"
+        existing = result.get("warning")
+        fallback_note = (
+            "Interval multi-horizon belum dapat dikalibrasi; sementara memakai interval legacy D+1."
+        )
+        result["warning"] = f"{existing} {fallback_note}".strip() if existing else fallback_note
+
+    return result
+
+
+@st.cache_data(show_spinner="Membandingkan semua model per horizon...")
+def get_model_horizon_leaderboard(
+    horizons: tuple[int, ...] = DEFAULT_EVAL_HORIZONS,
+    evaluation_days: int = 180,
+    origin_step_days: int = 30,
+) -> dict:
+    """Bandingkan semua model pada origin/horizon yang sama, lalu rank per horizon."""
+    training_series = get_forecast_training_series()
+    summary_frames: list[pd.DataFrame] = []
+    errors: list[dict] = []
+
+    for model_name in config.FORECAST_MODEL_CHOICES.keys():
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                bt = _build_multi_horizon_backtest(
+                    training_series,
+                    model_name,
+                    horizons=horizons,
+                    evaluation_days=evaluation_days,
+                    origin_step_days=origin_step_days,
+                )
+                summary = _summarize_multi_horizon_backtest(bt)
+            if summary.empty:
+                errors.append({"model_name": model_name, "error": "No successful forecasts"})
+                continue
+            summary = summary.copy()
+            summary["model_name"] = model_name
+            summary["model_label"] = config.FORECAST_MODEL_CHOICES.get(model_name, model_name)
+            summary_frames.append(summary)
+        except Exception as exc:
+            errors.append({"model_name": model_name, "error": f"{type(exc).__name__}: {exc}"})
+
+    if summary_frames:
+        combined = pd.concat(summary_frames, ignore_index=True, sort=False)
+        leaderboard = _rank_model_horizon_summaries(combined)
+        if "model_label" not in leaderboard.columns:
+            leaderboard["model_label"] = leaderboard["model_name"].map(config.FORECAST_MODEL_CHOICES)
+        winners = leaderboard[leaderboard["best_for_horizon"]].copy()
+    else:
+        combined = pd.DataFrame()
+        leaderboard = pd.DataFrame()
+        winners = pd.DataFrame()
+
+    return {
+        "leaderboard": leaderboard,
+        "winners": winners,
+        "summary": combined,
+        "errors": pd.DataFrame(errors),
+        "evaluation_days": int(evaluation_days),
+        "origin_step_days": int(origin_step_days),
+    }
 
 
 @st.cache_data(show_spinner="Menjalankan validasi lintas tahun...")
