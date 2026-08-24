@@ -34,15 +34,18 @@ jobs:
           UJB_USERNAME: ${{ secrets.UJB_USERNAME }}
           UJB_PASSWORD: ${{ secrets.UJB_PASSWORD }}
           UJB_OUTPUT_DIR: ${{ github.workspace }}/data/raw
-          # 7 hari kalender inklusif memakai timezone Asia/Jakarta di scraper.
+          # 7 hari kalender inklusif memakai timezone Asia/Jakarta.
           UJB_LOOKBACK_DAYS: "7"
-        run: python ujb_dashboard_scraper.py
+        run: python ujb_scrape_runner.py
 
       - name: Commit & push kalau ada data baru
         run: |
           git config user.name "ujb-scraper-bot"
           git config user.email "actions@github.com"
-          git add data/raw/ujb_scraped_latest.csv data/raw/ujb_history.csv
+          git add \
+            data/raw/ujb_scraped_latest.csv \
+            data/raw/ujb_history.csv \
+            data/raw/ujb_filter_diagnostics.json
           if git diff --cached --quiet; then
             echo "Tidak ada perubahan data, skip commit."
           else
