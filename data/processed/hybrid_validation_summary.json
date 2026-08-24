@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-08-24T07:22:06.366457+00:00",
+  "generated_at_utc": "2026-08-24T07:36:35.579176+00:00",
   "data_source_mode": "hybrid",
   "passed": true,
   "hybrid_selected_rows": 87831,
@@ -25,13 +25,59 @@
     "coverage_end": "2026-08-24",
     "coverage_days": 7
   },
+  "forecast_coverage": {
+    "calendar_start": "2025-01-01",
+    "calendar_end": "2026-08-24",
+    "gap_days": 27,
+    "gap_start": "2026-07-22",
+    "gap_end": "2026-08-17",
+    "gap_values_are_nan": true,
+    "training_segment": {
+      "start_date": "2025-01-01",
+      "end_date": "2025-12-31",
+      "n_days": 365,
+      "contains_nan": false
+    },
+    "latest_operational_segment": {
+      "start_date": "2026-08-18",
+      "end_date": "2026-08-24",
+      "n_days": 7,
+      "contains_nan": false,
+      "model_ready_30d": false
+    },
+    "segments": [
+      {
+        "segment_id": 1,
+        "start_date": "2025-01-01",
+        "end_date": "2026-07-21",
+        "n_days": 567,
+        "total_liter": 10470143.700201001,
+        "source_systems": "EXCEL",
+        "model_ready": true,
+        "is_latest": false
+      },
+      {
+        "segment_id": 2,
+        "start_date": "2026-08-18",
+        "end_date": "2026-08-24",
+        "n_days": 7,
+        "total_liter": 36695.409999999996,
+        "source_systems": "UJB",
+        "model_ready": false,
+        "is_latest": true
+      }
+    ]
+  },
   "violations": {
     "direct_category_multi_source_groups": 0,
     "modul_multi_source_groups": 0,
     "duplicate_selected_ujb_event_key_rows": 0,
     "unapproved_ujb_selected_rows": 0,
     "blank_source_selection_reason_rows": 0,
-    "selected_liter_audit_mismatch": false
+    "selected_liter_audit_mismatch": false,
+    "forecast_gap_was_imputed": false,
+    "forecast_training_segment_contains_nan": false,
+    "forecast_latest_segment_contains_nan": false
   },
   "duplicate_event_key_examples": [],
   "source_reason_summary": [
