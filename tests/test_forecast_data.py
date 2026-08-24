@@ -17,6 +17,21 @@ def _row(date, fuel, status="VALID", eq="EQ-1", cat="TEST", source_row=1):
     }
 
 
+def _ujb_row(date, fuel, event_key, event_time, eq="101", source_row=1):
+    return {
+        "date": pd.Timestamp(date),
+        "equipment_category": "HEAD_TRUCK",
+        "equipment_id": eq,
+        "fuel_liter": fuel,
+        "data_status": "VALID",
+        "source_file": "ujb_dashboard_scrape",
+        "source_row": source_row,
+        "source_system": "UJB",
+        "source_event_key": event_key,
+        "event_time": event_time,
+    }
+
+
 def test_status_only_day_becomes_zero_without_breaking_calendar():
     cleaned = pd.DataFrame([
         _row("2025-01-01", 100.0),
@@ -59,6 +74,37 @@ def test_duplicate_group_counted_once_in_forecast_target():
 
     s = build_daily_refueling_series(cleaned)
     assert s.loc["2025-01-01"] == pytest.approx(150.0)
+
+
+def test_multiple_ujb_events_same_unit_day_are_all_counted():
+    cleaned = pd.DataFrame([
+        _ujb_row("2026-08-18", 50.0, "evt-1", "08:00:00", source_row=1),
+        _ujb_row("2026-08-18", 40.0, "evt-2", "13:00:00", source_row=2),
+    ])
+
+    s = build_daily_refueling_series(cleaned)
+    assert s.loc["2026-08-18"] == pytest.approx(90.0)
+
+
+def test_repeated_ujb_event_key_is_counted_once():
+    cleaned = pd.DataFrame([
+        _ujb_row("2026-08-18", 50.0, "evt-1", "08:00:00", source_row=1),
+        _ujb_row("2026-08-18", 50.0, "evt-1", "08:00:00", source_row=2),
+    ])
+
+    s = build_daily_refueling_series(cleaned)
+    assert s.loc["2026-08-18"] == pytest.approx(50.0)
+
+
+def test_unkeyed_ujb_exact_event_uses_time_fallback_dedup():
+    cleaned = pd.DataFrame([
+        _ujb_row("2026-08-18", 50.0, None, "08:00:00", source_row=1),
+        _ujb_row("2026-08-18", 50.0, None, "08:00:00", source_row=2),
+        _ujb_row("2026-08-18", 25.0, None, "13:00:00", source_row=3),
+    ])
+
+    s = build_daily_refueling_series(cleaned)
+    assert s.loc["2026-08-18"] == pytest.approx(75.0)
 
 
 def test_negative_and_invalid_date_values_do_not_enter_target():
