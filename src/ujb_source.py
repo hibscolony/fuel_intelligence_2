@@ -1,14 +1,11 @@
 """
 ujb_source.py
 ==============
-Alternatif dari data_loader.parse_workbook() -- alih-alih parsing Excel
-manual, baca data langsung dari hasil scrape dashboard.ujbgroup.com
-(lihat ujb_dashboard_scraper.py di root project).
+Membaca data UJB yang sudah ditransformasi ke skema long-form.
 
-Tujuannya supaya data UJB melewati proses cleaning/flagging (duplikat,
-nilai negatif, outlier tinggi, dst) yang PERSIS SAMA dengan yang dulu
-dipakai untuk data Excel -- bukan logika terpisah -- supaya hasil anomaly
-detection, forecasting, dst tetap konsisten metodenya.
+Untuk pipeline hybrid, histori persisten ``ujb_history.csv`` diprioritaskan
+atas snapshot ``ujb_scraped_latest.csv``. Snapshot tetap menjadi fallback
+untuk kompatibilitas saat history belum tersedia.
 """
 from __future__ import annotations
 
@@ -25,61 +22,84 @@ from src.ujb_unit_mapping import normalize_ujb_category_and_id
 
 
 class NoUjbDataError(Exception):
-    """Dilempar kalau file hasil scrape UJB belum ada / masih kosong --
-    kondisi normal untuk deploy pertama sebelum GitHub Actions scraper
-    pernah jalan sekali. Ditangkap di app.py untuk ditampilkan sebagai
-    pesan ramah, bukan traceback mentah ke pengguna dashboard.
-    """
+    """Dilempar kalau tidak ada file UJB yang dapat dipakai."""
 
 
-# Kolom yang WAJIB ada di long_df sebelum masuk ke build_cleaned_fuel_data(),
-# harus identik dengan output data_loader.parse_workbook().long_df.
-_LONG_DF_COLUMNS = [
+_REQUIRED_COLUMNS = [
     "date", "year", "month", "equipment_category", "equipment_id",
     "fuel_liter", "status_text", "source_sheet", "source_file", "source_row",
 ]
+_OPTIONAL_PROVENANCE_COLUMNS = ["event_time", "source_event_key"]
+
+
+def _candidate_paths() -> list[Path]:
+    history_path = config.RAW_DATA_DIR / "ujb_history.csv"
+    return [history_path, config.UJB_SCRAPE_PATH]
+
+
+def _read_first_available_ujb_file() -> tuple[pd.DataFrame, Path]:
+    seen_existing: list[Path] = []
+    for path in _candidate_paths():
+        if not path.exists():
+            continue
+        seen_existing.append(path)
+        df = pd.read_csv(path)
+        if not df.empty:
+            return df, path
+
+    if seen_existing:
+        names = ", ".join(p.name for p in seen_existing)
+        raise NoUjbDataError(
+            f"File UJB ditemukan ({names}) tetapi semuanya kosong. "
+            "Cek workflow scraper terakhir di GitHub Actions."
+        )
+    raise NoUjbDataError(
+        "Belum ada data UJB. Diharapkan salah satu dari "
+        "data/raw/ujb_history.csv atau data/raw/ujb_scraped_latest.csv."
+    )
 
 
 def load_ujb_long_df() -> pd.DataFrame:
-    """Baca config.UJB_SCRAPE_PATH, kembalikan DataFrame siap dipakai
-    build_cleaned_fuel_data() -- sama seperti ParseResult.long_df dari jalur
-    Excel yang lama.
+    """Kembalikan histori UJB siap masuk ke source reconciliation/cleaning.
 
-    CSV lama juga dinormalisasi ulang saat dibaca. Ini penting karena file
-    ``ujb_scraped_latest.csv`` bisa saja dibuat sebelum taxonomy UJB diperbaiki
-    (mis. RFK vs FRK, atau plat B 8137 OH yang dulu terbaca sebagai kategori B).
+    - ``ujb_history.csv`` dipakai lebih dulu agar histori tidak hilang saat
+      snapshot 7-hari bergeser.
+    - taxonomy legacy dinormalisasi ulang saat load;
+    - ``event_time`` dan ``source_event_key`` dipertahankan untuk audit dan
+      identitas transaksi;
+    - duplicate event key di history dibuang secara idempotent.
     """
-    if not config.UJB_SCRAPE_PATH.exists():
-        raise NoUjbDataError(
-            f"Belum ada data hasil scrape UJB di {config.UJB_SCRAPE_PATH}. "
-            f"Kemungkinan GitHub Actions scraper belum pernah jalan -- cek tab "
-            f"'Actions' di repo, atau jalankan workflow-nya manual sekali "
-            f"('Run workflow')."
-        )
+    df, source_path = _read_first_available_ujb_file()
 
-    df = pd.read_csv(config.UJB_SCRAPE_PATH)
-    if df.empty:
-        raise NoUjbDataError(
-            f"File {config.UJB_SCRAPE_PATH.name} ada tapi isinya kosong -- "
-            f"kemungkinan scraper terakhir jalan tapi tidak berhasil ambil data "
-            f"(cek log run terakhir di GitHub Actions)."
-        )
-
-    missing = [c for c in _LONG_DF_COLUMNS if c not in df.columns]
+    missing = [c for c in _REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         raise NoUjbDataError(
-            f"File {config.UJB_SCRAPE_PATH.name} kehilangan kolom wajib: {missing}. "
-            f"Kemungkinan skema ujb_dashboard_scraper.py berubah -- cek "
-            f"transform_to_dashboard_schema() di sana."
+            f"File {source_path.name} kehilangan kolom wajib: {missing}. "
+            "Kemungkinan skema scraper berubah."
         )
 
-    # Normalisasi taxonomy legacy TANPA perlu menunggu scraper berikutnya.
     normalized = df.apply(
-        lambda r: normalize_ujb_category_and_id(r["equipment_category"], r["equipment_id"]),
+        lambda r: normalize_ujb_category_and_id(
+            r["equipment_category"], r["equipment_id"]
+        ),
         axis=1,
     )
     df["equipment_category"] = normalized.apply(lambda t: t[0])
     df["equipment_id"] = normalized.apply(lambda t: t[1])
-
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    return df[_LONG_DF_COLUMNS].copy()
+
+    if "source_event_key" in df.columns:
+        key = df["source_event_key"].astype("string")
+        valid_key = key.notna() & key.str.strip().ne("")
+        keyed = df.loc[valid_key].drop_duplicates(
+            subset=["source_event_key"], keep="last"
+        )
+        unkeyed = df.loc[~valid_key]
+        df = pd.concat([keyed, unkeyed], ignore_index=True, sort=False)
+
+    df["source_system"] = "UJB"
+
+    output_columns = _REQUIRED_COLUMNS + [
+        c for c in _OPTIONAL_PROVENANCE_COLUMNS if c in df.columns
+    ] + ["source_system"]
+    return df[output_columns].copy()
