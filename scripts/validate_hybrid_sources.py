@@ -19,7 +19,7 @@ if str(_ROOT) not in sys.path:
 
 import config
 from src.data_cleaning import run_cleaning_pipeline
-from src.source_reconciliation import UJB_PREFERRED_CATEGORIES
+from src.source_reconciliation import MODUL_CATEGORY, UJB_PREFERRED_CATEGORIES
 from src.ujb_source import load_ujb_long_df
 
 
@@ -78,6 +78,19 @@ def _audit_reason_summary(audit: pd.DataFrame) -> list[dict]:
     return records
 
 
+def _multi_source_group_count(cleaned: pd.DataFrame, categories: set[str]) -> int:
+    selected = cleaned[
+        cleaned["equipment_category"].astype(str).str.upper().isin(categories)
+    ].copy()
+    if selected.empty:
+        return 0
+    source_counts = (
+        selected.groupby(["date", "equipment_category"])["source_system"]
+        .nunique(dropna=True)
+    )
+    return int((source_counts > 1).sum())
+
+
 def main() -> int:
     if config.DATA_SOURCE_MODE != "hybrid":
         raise RuntimeError(
@@ -94,16 +107,10 @@ def main() -> int:
     audit["date"] = pd.to_datetime(audit["date"], errors="coerce").dt.normalize()
     ujb["date"] = pd.to_datetime(ujb["date"], errors="coerce").dt.normalize()
 
-    direct_categories = sorted(UJB_PREFERRED_CATEGORIES)
-    direct_selected = cleaned[
-        cleaned["equipment_category"].astype(str).str.upper().isin(direct_categories)
-    ].copy()
-
-    source_counts = (
-        direct_selected.groupby(["date", "equipment_category"])["source_system"]
-        .nunique(dropna=True)
+    direct_category_multi_source_groups = _multi_source_group_count(
+        cleaned, set(UJB_PREFERRED_CATEGORIES)
     )
-    overlapping_selected_groups = source_counts[source_counts > 1]
+    modul_multi_source_groups = _multi_source_group_count(cleaned, {MODUL_CATEGORY})
 
     ujb_selected = cleaned[cleaned["source_system"].astype(str).str.upper().eq("UJB")].copy()
     duplicate_event_keys = 0
@@ -135,7 +142,8 @@ def main() -> int:
     coverage_end = pd.Timestamp(coverage_dates[-1]).strftime("%Y-%m-%d") if coverage_dates else None
 
     violations = {
-        "direct_category_multi_source_groups": int(len(overlapping_selected_groups)),
+        "direct_category_multi_source_groups": direct_category_multi_source_groups,
+        "modul_multi_source_groups": modul_multi_source_groups,
         "duplicate_selected_ujb_event_key_rows": duplicate_event_keys,
         "unapproved_ujb_selected_rows": unapproved_selected_rows,
         "blank_source_selection_reason_rows": blank_reason_rows,
@@ -144,6 +152,7 @@ def main() -> int:
 
     passed = not any([
         violations["direct_category_multi_source_groups"],
+        violations["modul_multi_source_groups"],
         violations["duplicate_selected_ujb_event_key_rows"],
         violations["unapproved_ujb_selected_rows"],
         violations["blank_source_selection_reason_rows"],
