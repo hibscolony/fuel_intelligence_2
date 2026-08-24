@@ -1,0 +1,58 @@
+name: Validate Hybrid Excel + UJB
+
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: hybrid-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run source-aware regression tests
+        run: |
+          pytest -q \
+            tests/test_source_reconciliation.py \
+            tests/test_forecast_data.py \
+            tests/test_ujb_unit_mapping.py
+
+      - name: Validate real hybrid pipeline
+        env:
+          FUEL_DATA_SOURCE: hybrid
+        run: python scripts/validate_hybrid_sources.py
+
+      - name: Commit validation outputs
+        if: always()
+        run: |
+          if [ ! -f data/processed/source_reconciliation_audit.csv ] && \
+             [ ! -f data/processed/hybrid_validation_summary.json ]; then
+            echo "Tidak ada output validator untuk disimpan."
+            exit 0
+          fi
+
+          git config user.name "hybrid-validator-bot"
+          git config user.email "actions@github.com"
+          git add \
+            data/processed/source_reconciliation_audit.csv \
+            data/processed/hybrid_validation_summary.json 2>/dev/null || true
+
+          if git diff --cached --quiet; then
+            echo "Output validasi tidak berubah."
+          else
+            git commit -m "chore: update hybrid validation audit [skip ci]"
+            git push
+          fi
