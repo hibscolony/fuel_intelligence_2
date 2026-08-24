@@ -1,5 +1,8 @@
 """Tests taxonomy unit UJB yang sudah dikonfirmasi operasional."""
+import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.ujb_unit_mapping import parse_ujb_unit, normalize_ujb_category_and_id
 
 
