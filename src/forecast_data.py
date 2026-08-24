@@ -4,27 +4,30 @@ forecast_data.py
 Pembentukan target harian khusus forecasting.
 
 Target yang diprediksi adalah TOTAL LITER PENGISIAN SOLAR TERCATAT per hari,
-bukan konsumsi mesin real-time. Modul ini sengaja memisahkan tiga keadaan:
+bukan konsumsi mesin real-time. Modul ini membedakan tiga keadaan kalender:
 
-1. Ada transaksi numerik layak pada hari tsb -> jumlahkan liter.
-2. Ada baris sumber pada hari tsb tetapi tidak ada transaksi numerik layak
-   (mis. hanya STATUS_ONLY) -> 0 liter pengisian tercatat.
-3. Tidak ada baris sumber SAMA SEKALI pada suatu hari di tengah rentang data ->
-   coverage gap / data tidak diketahui. Dalam mode strict, kondisi ini
-   menimbulkan ValueError agar tidak diam-diam diubah menjadi 0 atau di-drop,
-   karena itu akan menggeser arti lag kalender (lag_7 harus benar-benar 7 hari).
+1. Ada transaksi numerik layak -> jumlahkan liter.
+2. Ada baris sumber tetapi tidak ada transaksi numerik layak -> 0 liter
+   pengisian tercatat.
+3. Tidak ada baris sumber sama sekali di tengah rentang -> coverage gap /
+   nilai tidak diketahui; dalam mode strict forecasting dihentikan.
 
-Baris INVALID_DATE dan nilai negatif tidak dipakai. Baris yang ditandai
-DUPLICATE direduksi menjadi satu record per (tanggal, kategori, equipment_id),
-sesuai asumsi struktur workbook bahwa satu unit mempunyai satu sel pengisian
-per hari.
+Deduplication bersifat source-aware:
+- Excel: satu cell unit-hari, jadi salinan (date, category, equipment_id)
+  direduksi menjadi satu record kanonik.
+- UJB: event stream. Beberapa pengisian unit yang sama pada hari yang sama
+  adalah sah dan semuanya dijumlahkan. Hanya source_event_key yang benar-benar
+  berulang (atau exact event fallback bila key tidak tersedia) yang direduksi.
 """
 from __future__ import annotations
 
 import pandas as pd
 
 
-_FORECAST_DEDUP_KEYS = ["date", "equipment_category", "equipment_id"]
+_EXCEL_DEDUP_KEYS = ["date", "equipment_category", "equipment_id"]
+_UJB_EVENT_FALLBACK_KEYS = [
+    "date", "event_time", "equipment_category", "equipment_id", "fuel_liter"
+]
 
 
 def _validate_columns(cleaned: pd.DataFrame) -> None:
@@ -34,27 +37,89 @@ def _validate_columns(cleaned: pd.DataFrame) -> None:
         raise ValueError(f"Kolom wajib untuk membangun deret forecast tidak tersedia: {missing}")
 
 
+def _source_aware_deduplicate(numeric: pd.DataFrame) -> pd.DataFrame:
+    """Deduplicate numeric refueling rows without collapsing valid UJB events."""
+    if numeric.empty:
+        return numeric
+
+    df = numeric.copy()
+    if "source_system" in df.columns:
+        systems = df["source_system"].fillna("EXCEL").astype(str).str.upper()
+    else:
+        # Backward compatibility for historical/test data created before
+        # source provenance existed: old long-form semantics are Excel-like.
+        systems = pd.Series("EXCEL", index=df.index)
+
+    frames: list[pd.DataFrame] = []
+
+    excel = df.loc[systems.ne("UJB")].copy()
+    if not excel.empty:
+        sort_cols = [
+            c for c in ["date", "equipment_category", "equipment_id", "source_file", "source_row"]
+            if c in excel.columns
+        ]
+        if sort_cols:
+            excel = excel.sort_values(sort_cols)
+        excel = excel.drop_duplicates(subset=_EXCEL_DEDUP_KEYS, keep="first")
+        frames.append(excel)
+
+    ujb = df.loc[systems.eq("UJB")].copy()
+    if not ujb.empty:
+        if "source_event_key" in ujb.columns:
+            keys = ujb["source_event_key"].astype("string")
+            keyed_mask = keys.notna() & keys.str.strip().ne("")
+        else:
+            keyed_mask = pd.Series(False, index=ujb.index)
+
+        keyed = ujb.loc[keyed_mask].copy()
+        if not keyed.empty:
+            sort_cols = [
+                c for c in ["date", "event_time", "source_event_key", "source_row"]
+                if c in keyed.columns
+            ]
+            if sort_cols:
+                keyed = keyed.sort_values(sort_cols)
+            keyed = keyed.drop_duplicates(subset=["source_event_key"], keep="first")
+            frames.append(keyed)
+
+        unkeyed = ujb.loc[~keyed_mask].copy()
+        if not unkeyed.empty:
+            # If event_time exists, an exact repeated event can safely be
+            # collapsed. Without event identity we conservatively KEEP rows:
+            # same-day repeated refuels can be legitimate UJB transactions.
+            fallback_keys = [c for c in _UJB_EVENT_FALLBACK_KEYS if c in unkeyed.columns]
+            has_event_time = (
+                "event_time" in unkeyed.columns
+                and unkeyed["event_time"].astype("string").fillna("").str.strip().ne("").any()
+            )
+            if has_event_time and len(fallback_keys) == len(_UJB_EVENT_FALLBACK_KEYS):
+                sort_cols = [c for c in ["date", "event_time", "source_row"] if c in unkeyed.columns]
+                if sort_cols:
+                    unkeyed = unkeyed.sort_values(sort_cols)
+                unkeyed = unkeyed.drop_duplicates(subset=fallback_keys, keep="first")
+            frames.append(unkeyed)
+
+    if not frames:
+        return df.iloc[0:0].copy()
+
+    result = pd.concat(frames, ignore_index=True, sort=False)
+    sort_cols = [
+        c for c in ["date", "equipment_category", "equipment_id", "event_time", "source_row"]
+        if c in result.columns
+    ]
+    if sort_cols:
+        result = result.sort_values(sort_cols, na_position="last")
+    return result.reset_index(drop=True)
+
+
 def build_daily_refueling_series(cleaned: pd.DataFrame,
                                   strict_source_coverage: bool = True) -> pd.Series:
     """Bangun deret harian total liter pengisian yang aman untuk forecasting.
 
-    Parameters
-    ----------
-    cleaned:
-        Output ``cleaned_fuel_data`` dari pipeline cleaning.
-    strict_source_coverage:
-        Jika True (default), hari tanpa BARIS SUMBER sama sekali di tengah
-        rentang data dianggap unresolved coverage gap dan memicu ValueError.
-        Jika False, hari tersebut dipertahankan sebagai NaN. Jangan ``dropna``
-        sebelum membuat lag/rolling karena akan mengubah lag kalender menjadi
-        lag berbasis urutan observasi.
-
-    Returns
-    -------
-    pd.Series
-        DatetimeIndex harian reguler. Hari yang memiliki baris sumber tetapi
-        tidak memiliki liter numerik layak diisi 0.0. Hari tanpa coverage
-        sumber tetap NaN bila ``strict_source_coverage=False``.
+    ``strict_source_coverage=True`` membuat hari tanpa BARIS SUMBER sama sekali
+    di tengah rentang memicu ValueError. Jika False, hari tersebut tetap NaN.
+    Jangan drop NaN sebelum membuat lag/rolling karena itu mengubah arti lag
+    kalender menjadi lag urutan observasi.
     """
     _validate_columns(cleaned)
 
@@ -65,16 +130,12 @@ def build_daily_refueling_series(cleaned: pd.DataFrame,
     if source_rows.empty:
         raise ValueError("Tidak ada baris bertanggal valid untuk membangun deret forecast.")
 
-    # Forecast bekerja pada kalender HARIAN; timestamp intraday dari sumber
-    # berbeda harus terlebih dulu dipetakan ke tanggal kalender yang sama.
     source_rows["date"] = source_rows["date"].dt.normalize()
 
     first_date = source_rows["date"].min()
     last_date = source_rows["date"].max()
     full_index = pd.date_range(first_date, last_date, freq="D")
 
-    # Coverage sumber: keberadaan baris apa pun pada hari tersebut. Ini berbeda
-    # dari keberadaan transaksi liter numerik.
     daily_source_rows = source_rows.groupby("date").size()
     daily_source_rows = daily_source_rows.reindex(full_index, fill_value=0)
     source_gap_dates = daily_source_rows.index[daily_source_rows.eq(0)]
@@ -96,19 +157,11 @@ def build_daily_refueling_series(cleaned: pd.DataFrame,
         & ~numeric["data_status"].isin(["NEGATIVE_VALUE"])
     ].copy()
 
-    # Cleaning menandai seluruh anggota duplicate group sebagai DUPLICATE
-    # (keep=False). Untuk target forecast kita butuh satu nilai kanonik, bukan
-    # menjumlahkan semua salinan dan bukan pula membuang seluruh grup.
-    sort_cols = [c for c in ["date", "equipment_category", "equipment_id", "source_file", "source_row"]
-                 if c in numeric.columns]
-    numeric = numeric.sort_values(sort_cols)
-    numeric = numeric.drop_duplicates(subset=_FORECAST_DEDUP_KEYS, keep="first")
+    numeric = _source_aware_deduplicate(numeric)
 
     daily_fuel = numeric.groupby("date")["fuel_liter"].sum()
     series = daily_fuel.reindex(full_index)
 
-    # Bila sumber hadir tetapi tak ada transaksi numerik layak, target yang
-    # teramati adalah 0 liter pengisian tercatat. Hanya source gap yang tetap NaN.
     observed_source_day = daily_source_rows.gt(0)
     series.loc[observed_source_day & series.isna()] = 0.0
     series.name = "fuel_liter"
@@ -117,12 +170,7 @@ def build_daily_refueling_series(cleaned: pd.DataFrame,
 
 
 def build_forecast_calendar_audit(cleaned: pd.DataFrame) -> pd.DataFrame:
-    """Ringkasan status kalender harian untuk audit sebelum forecasting.
-
-    ``OBSERVED_REFUEL``: ada >=1 transaksi numerik layak.
-    ``OBSERVED_ZERO_REFUEL``: sumber hadir, tetapi tidak ada liter numerik layak.
-    ``SOURCE_COVERAGE_GAP``: tidak ada baris sumber sama sekali; nilai tidak diketahui.
-    """
+    """Ringkasan status kalender harian untuk audit sebelum forecasting."""
     series = build_daily_refueling_series(cleaned, strict_source_coverage=False)
 
     df = cleaned.copy()
