@@ -12,6 +12,10 @@ bukan konsumsi mesin real-time. Modul ini membedakan tiga keadaan kalender:
 3. Tidak ada baris sumber sama sekali di tengah rentang -> coverage gap /
    nilai tidak diketahui; dalam mode strict forecasting dihentikan.
 
+Coverage gap TIDAK pernah diimputasi menjadi 0/interpolasi. Untuk data hybrid
+yang memiliki jeda antar-sumber, deret dapat dipecah menjadi segmen kalender
+kontigu yang masing-masing aman dipakai untuk lag/rolling.
+
 Deduplication bersifat source-aware:
 - Excel: satu cell unit-hari, jadi salinan (date, category, equipment_id)
   direduksi menjadi satu record kanonik.
@@ -169,6 +173,95 @@ def build_daily_refueling_series(cleaned: pd.DataFrame,
     return series.astype(float)
 
 
+def split_complete_daily_segments(series: pd.Series,
+                                  min_days: int = 1) -> list[pd.Series]:
+    """Pecah deret kalender menjadi blok kontigu tanpa NaN.
+
+    Fungsi ini sengaja TIDAK memakai ``dropna()`` pada seluruh deret. Tanggal
+    gap tetap menjadi batas antar-segmen sehingga lag 7 tetap berarti tujuh
+    hari kalender di dalam segmen yang benar-benar tercakup sumber.
+    """
+    if not isinstance(series, pd.Series):
+        raise TypeError("series harus berupa pandas Series.")
+    if series.empty:
+        return []
+    if int(min_days) <= 0:
+        raise ValueError("min_days harus >= 1.")
+
+    s = series.copy()
+    if not isinstance(s.index, pd.DatetimeIndex):
+        s.index = pd.to_datetime(s.index)
+    s = s.sort_index().astype(float)
+    if s.index.has_duplicates:
+        raise ValueError("Series memiliki tanggal duplikat.")
+
+    expected = pd.date_range(s.index.min(), s.index.max(), freq="D")
+    if not s.index.equals(expected):
+        raise ValueError(
+            "Series harus mempertahankan kalender harian penuh termasuk NaN pada coverage gap."
+        )
+
+    observed = s.notna()
+    block_id = observed.ne(observed.shift(fill_value=False)).cumsum()
+    segments: list[pd.Series] = []
+    for _, block in s.groupby(block_id):
+        if block.notna().all() and len(block) >= int(min_days):
+            block = block.copy()
+            block.name = s.name
+            segments.append(block)
+    return segments
+
+
+def select_complete_daily_segment(series: pd.Series,
+                                  containing_date=None,
+                                  end_at=None,
+                                  latest: bool = False,
+                                  min_days: int = 1) -> pd.Series:
+    """Pilih satu segmen kontigu untuk kebutuhan model.
+
+    - ``containing_date``: pilih segmen yang benar-benar mencakup tanggal itu.
+    - ``end_at``: pilih segmen terakhir yang tersedia sampai tanggal cutoff,
+      kemudian clip segmen pada cutoff. Berguna untuk training historis.
+    - ``latest=True``: pilih segmen coverage paling baru.
+
+    Tidak pernah melompati coverage gap dan tidak pernah mengimputasi NaN.
+    """
+    segments = split_complete_daily_segments(series, min_days=1)
+    if not segments:
+        raise ValueError("Tidak ada segmen coverage harian yang lengkap.")
+
+    selected: pd.Series | None = None
+
+    if containing_date is not None:
+        target = pd.Timestamp(containing_date).normalize()
+        for seg in segments:
+            if seg.index.min() <= target <= seg.index.max():
+                selected = seg
+                break
+        if selected is None:
+            raise ValueError(f"Tanggal {target.date()} berada pada coverage gap.")
+    elif end_at is not None:
+        cutoff = pd.Timestamp(end_at).normalize()
+        candidates = [seg for seg in segments if seg.index.min() <= cutoff]
+        if not candidates:
+            raise ValueError(f"Tidak ada segmen coverage sebelum {cutoff.date()}.")
+        selected = candidates[-1].loc[:cutoff]
+    elif latest:
+        selected = segments[-1]
+    else:
+        selected = segments[-1]
+
+    if selected is None or len(selected) < int(min_days):
+        available = 0 if selected is None else len(selected)
+        raise ValueError(
+            f"Segmen coverage terlalu pendek untuk kebutuhan model: {available} hari, "
+            f"minimal {int(min_days)} hari."
+        )
+    if selected.isna().any():
+        raise ValueError("Segmen terpilih masih memiliki NaN; ini menandakan bug coverage selection.")
+    return selected.astype(float)
+
+
 def build_forecast_calendar_audit(cleaned: pd.DataFrame) -> pd.DataFrame:
     """Ringkasan status kalender harian untuk audit sebelum forecasting."""
     series = build_daily_refueling_series(cleaned, strict_source_coverage=False)
@@ -189,3 +282,41 @@ def build_forecast_calendar_audit(cleaned: pd.DataFrame) -> pd.DataFrame:
         "source_row_count": counts.values,
         "calendar_status": status.values,
     })
+
+
+def build_forecast_coverage_segments(cleaned: pd.DataFrame,
+                                     model_ready_min_days: int = 30) -> pd.DataFrame:
+    """Ringkas blok coverage kontigu untuk dashboard/model selection."""
+    full = build_daily_refueling_series(cleaned, strict_source_coverage=False)
+    audit = build_forecast_calendar_audit(cleaned).set_index("date")
+    segments = split_complete_daily_segments(full)
+
+    df = cleaned.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    records: list[dict] = []
+    for idx, seg in enumerate(segments, start=1):
+        start = seg.index.min()
+        end = seg.index.max()
+        mask = df["date"].between(start, end, inclusive="both")
+        if "source_system" in df.columns:
+            sources = sorted(
+                df.loc[mask, "source_system"].dropna().astype(str).str.upper().unique().tolist()
+            )
+        else:
+            sources = ["EXCEL"]
+        records.append({
+            "segment_id": idx,
+            "start_date": start,
+            "end_date": end,
+            "n_days": int(len(seg)),
+            "total_liter": float(seg.sum()),
+            "source_row_count": int(audit.loc[start:end, "source_row_count"].sum()),
+            "source_systems": ", ".join(sources),
+            "model_ready": bool(len(seg) >= int(model_ready_min_days)),
+            "is_latest": bool(idx == len(segments)),
+        })
+
+    return pd.DataFrame(records, columns=[
+        "segment_id", "start_date", "end_date", "n_days", "total_liter",
+        "source_row_count", "source_systems", "model_ready", "is_latest",
+    ])
