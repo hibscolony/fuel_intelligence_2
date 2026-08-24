@@ -27,7 +27,12 @@ import config
 from src.data_cleaning import run_cleaning_pipeline, CleaningResult
 from src.ujb_source import NoUjbDataError
 from src.data_quality import compute_dq_kpis, detect_missing_dates, detect_zero_consumption_streaks
-from src.forecast_data import build_daily_refueling_series
+from src.forecast_data import (
+    build_daily_refueling_series,
+    build_forecast_calendar_audit,
+    build_forecast_coverage_segments,
+    select_complete_daily_segment,
+)
 from src.forecast_integration import (
     load_forecast_results, compute_forecast_errors, compute_overall_metrics,
     compute_rolling_performance, detect_model_drift_warning,
@@ -90,22 +95,88 @@ def get_data_quality() -> dict:
     return {"kpis": kpis, "zero_streaks": zero_streaks, "missing_dates": missing_dates}
 
 
+@st.cache_data(show_spinner=False)
+def get_daily_actual_series() -> pd.Series:
+    """Deret kalender penuh; coverage gap dipertahankan sebagai NaN."""
+    cleaning = get_cleaning_result()
+    return build_daily_refueling_series(
+        cleaning["cleaned_fuel_data"], strict_source_coverage=False
+    )
+
+
+@st.cache_data(show_spinner=False)
+def get_forecast_coverage() -> dict:
+    """Audit + segmentasi coverage tanpa mengimputasi tanggal yang tidak diketahui."""
+    cleaning = get_cleaning_result()
+    cleaned = cleaning["cleaned_fuel_data"]
+    full = build_daily_refueling_series(cleaned, strict_source_coverage=False)
+    audit = build_forecast_calendar_audit(cleaned)
+    segments = build_forecast_coverage_segments(cleaned, model_ready_min_days=30)
+    gap_rows = audit[audit["calendar_status"] == "SOURCE_COVERAGE_GAP"].copy()
+
+    latest_segment = select_complete_daily_segment(full, latest=True)
+    latest_meta = None
+    if not segments.empty:
+        latest_meta = segments.loc[segments["is_latest"]].iloc[-1].to_dict()
+
+    return {
+        "full_series": full,
+        "calendar_audit": audit,
+        "segments": segments,
+        "gap_days": int(len(gap_rows)),
+        "gap_start": None if gap_rows.empty else pd.Timestamp(gap_rows["date"].min()),
+        "gap_end": None if gap_rows.empty else pd.Timestamp(gap_rows["date"].max()),
+        "latest_segment": latest_segment,
+        "latest_segment_meta": latest_meta,
+    }
+
+
+@st.cache_data(show_spinner=False)
+def get_forecast_training_series() -> pd.Series:
+    """Pilih segmen lengkap terakhir sampai cutoff; jangan menyeberangi coverage gap."""
+    full = get_daily_actual_series()
+    cutoff = pd.Timestamp(config.FORECAST_TRAINING_CUTOFF)
+    return select_complete_daily_segment(full, end_at=cutoff, min_days=60)
+
+
+@st.cache_data(show_spinner=False)
+def get_latest_operational_series() -> pd.Series:
+    """Segmen coverage terbaru, biasanya UJB realtime setelah gap sumber."""
+    full = get_daily_actual_series()
+    return select_complete_daily_segment(full, latest=True, min_days=1)
+
+
 @st.cache_data(show_spinner="Memuat & memantau hasil forecasting...")
 def get_forecast_monitoring() -> dict:
-    cleaning = get_cleaning_result()
-    daily_actual = build_daily_refueling_series(cleaning["cleaned_fuel_data"], strict_source_coverage=True)
+    """Monitoring tanpa memaksa segmen historis dan UJB menjadi satu deret palsu."""
+    training_actual = get_forecast_training_series()
+    recent_actual = get_latest_operational_series()
+    coverage = get_forecast_coverage()
+
+    # Placeholder seasonal-naive membutuhkan >7 hari. Selama segmen UJB masih
+    # terlalu pendek, placeholder monitoring tetap memakai segmen historis;
+    # recent UJB tetap diekspos terpisah sebagai operational context.
+    placeholder_actual = recent_actual if len(recent_actual) >= 14 else training_actual
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        forecast_df = load_forecast_results(daily_actual_fallback=daily_actual)
+        forecast_df = load_forecast_results(daily_actual_fallback=placeholder_actual)
         df_err = compute_forecast_errors(forecast_df)
         summary = compute_overall_metrics(df_err)
         rolling_perf = compute_rolling_performance(df_err)
         drift_warning = detect_model_drift_warning(rolling_perf)
 
     is_placeholder = summary.model_name == config.FORECAST_PLACEHOLDER_MODEL_NAME
-    return {"forecast_df": df_err, "summary": summary, "rolling_perf": rolling_perf,
-            "drift_warning": drift_warning, "is_placeholder": is_placeholder, "daily_actual": daily_actual}
+    return {
+        "forecast_df": df_err,
+        "summary": summary,
+        "rolling_perf": rolling_perf,
+        "drift_warning": drift_warning,
+        "is_placeholder": is_placeholder,
+        "daily_actual": placeholder_actual,
+        "recent_operational_actual": recent_actual,
+        "coverage": coverage,
+    }
 
 
 @st.cache_data(show_spinner="Mendeteksi anomali konsumsi solar...")
@@ -181,21 +252,7 @@ def get_recommendations() -> pd.DataFrame:
     return build_recommendations(health_scores, cleaning["category_monthly_reconciliation"], scenarios)
 
 
-@st.cache_data(show_spinner=False)
-def get_daily_actual_series() -> pd.Series:
-    cleaning = get_cleaning_result()
-    return build_daily_refueling_series(cleaning["cleaned_fuel_data"], strict_source_coverage=True)
-
-
-@st.cache_data(show_spinner=False)
-def get_forecast_training_series() -> pd.Series:
-    import pandas as pd
-    full = get_daily_actual_series()
-    return full.loc[:pd.Timestamp(config.FORECAST_TRAINING_CUTOFF)]
-
-
 def get_forecast_for_date(model_name: str, target_date) -> dict:
-    import pandas as pd
     training_series = get_forecast_training_series()
     return _forecast_for_date(training_series, model_name, pd.Timestamp(target_date))
 
@@ -235,18 +292,22 @@ def get_multi_horizon_backtest(model_name: str,
 
 @st.cache_data(show_spinner="Menjalankan validasi lintas tahun...")
 def get_cross_year_validation(model_name: str, cutoff_date_str: str) -> pd.DataFrame:
-    import pandas as pd
-    daily_actual = get_daily_actual_series()
+    """Validasi hanya di segmen kontigu yang mencakup cutoff; berhenti sebelum gap."""
+    full = get_daily_actual_series()
     cutoff = pd.Timestamp(cutoff_date_str)
-    if daily_actual.index.max() <= cutoff:
+    try:
+        contiguous = select_complete_daily_segment(full, containing_date=cutoff)
+    except ValueError:
+        return pd.DataFrame()
+    if contiguous.index.max() <= cutoff:
         return pd.DataFrame()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return _build_cross_year_validation(daily_actual, cutoff, model_name)
+        return _build_cross_year_validation(contiguous, cutoff, model_name)
 
 
 def get_available_years() -> list:
-    daily_actual = get_daily_actual_series()
+    daily_actual = get_daily_actual_series().dropna()
     return sorted(daily_actual.index.year.unique().tolist())
 
 
@@ -255,6 +316,7 @@ def get_all_data() -> dict:
         "cleaning": get_cleaning_result(),
         "data_quality": get_data_quality(),
         "forecast": get_forecast_monitoring(),
+        "forecast_coverage": get_forecast_coverage(),
         "anomalies": get_anomalies(),
         "change_points": get_change_points(),
         "health_scores": get_health_scores(),
