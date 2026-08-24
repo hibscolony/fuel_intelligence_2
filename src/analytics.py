@@ -27,6 +27,7 @@ import config
 from src.data_cleaning import run_cleaning_pipeline, CleaningResult
 from src.ujb_source import NoUjbDataError
 from src.data_quality import compute_dq_kpis, detect_missing_dates, detect_zero_consumption_streaks
+from src.forecast_data import build_daily_refueling_series
 from src.forecast_integration import (
     load_forecast_results, compute_forecast_errors, compute_overall_metrics,
     compute_rolling_performance, detect_model_drift_warning,
@@ -85,8 +86,12 @@ def get_data_quality() -> dict:
 @st.cache_data(show_spinner="Memuat & memantau hasil forecasting...")
 def get_forecast_monitoring() -> dict:
     cleaning = get_cleaning_result()
-    valid = cleaning["cleaned_fuel_data"][cleaning["cleaned_fuel_data"]["data_status"] != "INVALID_DATE"]
-    daily_actual = valid.groupby("date")["fuel_liter"].sum(min_count=1).asfreq("D")
+    # Target forecast dibangun lewat satu fungsi khusus agar:
+    # - duplicate tidak terhitung dua kali,
+    # - nilai negatif/invalid tidak masuk,
+    # - hari berstatus-only menjadi 0 liter tercatat,
+    # - source coverage gap TIDAK diam-diam di-drop sehingga lag kalender aman.
+    daily_actual = build_daily_refueling_series(cleaning["cleaned_fuel_data"], strict_source_coverage=True)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -180,13 +185,15 @@ def get_recommendations() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def get_daily_actual_series() -> pd.Series:
-    """Deret harian total (semua alat), SELURUH tahun yang tersedia -- dipakai
-    utk analisis deskriptif (Executive Overview, Konsumsi Detail, dst) dan utk
-    Validasi Lintas Tahun (yang justru butuh data sesudah cutoff sbg pembanding).
+    """Deret harian total PENGISIAN TERCATAT (semua alat), seluruh tahun.
+
+    Deret ini selalu berfrekuensi kalender harian. Hari yang memang memiliki
+    coverage sumber tetapi tidak ada liter numerik dicatat sebagai 0. Hari tanpa
+    coverage sumber sama sekali dianggap unresolved data gap dan forecasting
+    dihentikan, bukan ``dropna`` -- supaya lag_7 tetap berarti tujuh hari kalender.
     """
     cleaning = get_cleaning_result()
-    valid = cleaning["cleaned_fuel_data"][cleaning["cleaned_fuel_data"]["data_status"] != "INVALID_DATE"]
-    return valid.groupby("date")["fuel_liter"].sum(min_count=1).asfreq("D")
+    return build_daily_refueling_series(cleaning["cleaned_fuel_data"], strict_source_coverage=True)
 
 
 @st.cache_data(show_spinner=False)
