@@ -1,13 +1,16 @@
 name: Scrape UJB Dashboard Data
 
-# Jadwal: tiap 30 menit. Sesuaikan cron di bawah kalau mau lebih jarang/sering --
-# tapi jangan terlalu sering (mis. tiap menit), supaya tidak membebani server
-# vendor dan tidak boros GitHub Actions minutes.
-# Format cron: menit jam tanggal bulan hari -- semua dalam UTC.
+# Scheduled workflow hanya aktif dari default branch GitHub. Pada feature branch
+# workflow ini tetap bisa diuji lewat tombol "Run workflow".
 on:
   schedule:
     - cron: "*/30 * * * *"
-  workflow_dispatch: {}  # tombol "Run workflow" manual di tab Actions GitHub
+  workflow_dispatch: {}
+
+# Hindari dua scraper menulis ujb_history.csv pada branch yang sama bersamaan.
+concurrency:
+  group: ujb-scrape-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   scrape:
@@ -31,16 +34,18 @@ jobs:
           UJB_USERNAME: ${{ secrets.UJB_USERNAME }}
           UJB_PASSWORD: ${{ secrets.UJB_PASSWORD }}
           UJB_OUTPUT_DIR: ${{ github.workspace }}/data/raw
+          # 7 hari kalender inklusif memakai timezone Asia/Jakarta di scraper.
+          UJB_LOOKBACK_DAYS: "7"
         run: python ujb_dashboard_scraper.py
 
       - name: Commit & push kalau ada data baru
         run: |
           git config user.name "ujb-scraper-bot"
           git config user.email "actions@github.com"
-          git add data/raw/ujb_scraped_latest.csv
+          git add data/raw/ujb_scraped_latest.csv data/raw/ujb_history.csv
           if git diff --cached --quiet; then
             echo "Tidak ada perubahan data, skip commit."
           else
-            git commit -m "chore: auto-update data UJB scrape [skip ci]"
+            git commit -m "chore: update UJB snapshot and history [skip ci]"
             git push
           fi
