@@ -1,6 +1,10 @@
 """Tests for Excel + UJB source precedence."""
+import sys
+from pathlib import Path
+
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.source_reconciliation import reconcile_excel_and_ujb
 
 
