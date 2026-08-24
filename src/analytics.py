@@ -27,9 +27,16 @@ import config
 from src.data_cleaning import run_cleaning_pipeline, CleaningResult
 from src.ujb_source import NoUjbDataError
 from src.data_quality import compute_dq_kpis, detect_missing_dates, detect_zero_consumption_streaks
+from src.forecast_data import build_daily_refueling_series
 from src.forecast_integration import (
     load_forecast_results, compute_forecast_errors, compute_overall_metrics,
     compute_rolling_performance, detect_model_drift_warning,
+)
+from src.forecast_evaluation import (
+    DEFAULT_EVAL_HORIZONS,
+    build_multi_horizon_backtest as _build_multi_horizon_backtest,
+    summarize_multi_horizon_backtest as _summarize_multi_horizon_backtest,
+    residual_quantiles_by_horizon as _residual_quantiles_by_horizon,
 )
 from src.anomaly_detection import detect_anomalies, summarize_anomalies
 from src.change_point import detect_all_change_points, summarize_change_points
@@ -85,8 +92,12 @@ def get_data_quality() -> dict:
 @st.cache_data(show_spinner="Memuat & memantau hasil forecasting...")
 def get_forecast_monitoring() -> dict:
     cleaning = get_cleaning_result()
-    valid = cleaning["cleaned_fuel_data"][cleaning["cleaned_fuel_data"]["data_status"] != "INVALID_DATE"]
-    daily_actual = valid.groupby("date")["fuel_liter"].sum(min_count=1).asfreq("D")
+    # Target forecast dibangun lewat satu fungsi khusus agar:
+    # - duplicate tidak terhitung dua kali,
+    # - nilai negatif/invalid tidak masuk,
+    # - hari berstatus-only menjadi 0 liter tercatat,
+    # - source coverage gap TIDAK diam-diam di-drop sehingga lag kalender aman.
+    daily_actual = build_daily_refueling_series(cleaning["cleaned_fuel_data"], strict_source_coverage=True)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -180,13 +191,15 @@ def get_recommendations() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def get_daily_actual_series() -> pd.Series:
-    """Deret harian total (semua alat), SELURUH tahun yang tersedia -- dipakai
-    utk analisis deskriptif (Executive Overview, Konsumsi Detail, dst) dan utk
-    Validasi Lintas Tahun (yang justru butuh data sesudah cutoff sbg pembanding).
+    """Deret harian total PENGISIAN TERCATAT (semua alat), seluruh tahun.
+
+    Deret ini selalu berfrekuensi kalender harian. Hari yang memang memiliki
+    coverage sumber tetapi tidak ada liter numerik dicatat sebagai 0. Hari tanpa
+    coverage sumber sama sekali dianggap unresolved data gap dan forecasting
+    dihentikan, bukan ``dropna`` -- supaya lag_7 tetap berarti tujuh hari kalender.
     """
     cleaning = get_cleaning_result()
-    valid = cleaning["cleaned_fuel_data"][cleaning["cleaned_fuel_data"]["data_status"] != "INVALID_DATE"]
-    return valid.groupby("date")["fuel_liter"].sum(min_count=1).asfreq("D")
+    return build_daily_refueling_series(cleaning["cleaned_fuel_data"], strict_source_coverage=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -229,6 +242,31 @@ def get_model_backtest(model_name: str, backtest_days: int = 60) -> dict:
         drift_warning = detect_model_drift_warning(rolling_perf)
     return {"forecast_df": df_err, "summary": summary, "rolling_perf": rolling_perf,
             "drift_warning": drift_warning}
+
+
+@st.cache_data(show_spinner="Menjalankan evaluasi multi-horizon...")
+def get_multi_horizon_backtest(model_name: str,
+                               horizons: tuple[int, ...] = DEFAULT_EVAL_HORIZONS,
+                               evaluation_days: int = 180,
+                               origin_step_days: int = 7) -> dict:
+    """Rolling-origin evaluation D+1/D+3/D+7/... secara terpisah.
+
+    Berbeda dari ``get_model_backtest`` yang hanya 1-step-ahead, fungsi ini
+    menguji error sesuai horizon forecast sebenarnya dan sekaligus membangun
+    residual quantile per horizon untuk kalibrasi interval tahap berikutnya.
+    """
+    training_series = get_forecast_training_series()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        df = _build_multi_horizon_backtest(
+            training_series, model_name,
+            horizons=horizons,
+            evaluation_days=evaluation_days,
+            origin_step_days=origin_step_days,
+        )
+        summary = _summarize_multi_horizon_backtest(df)
+        residual_quantiles = _residual_quantiles_by_horizon(df)
+    return {"backtest_df": df, "summary": summary, "residual_quantiles": residual_quantiles}
 
 
 @st.cache_data(show_spinner="Menjalankan validasi lintas tahun...")
