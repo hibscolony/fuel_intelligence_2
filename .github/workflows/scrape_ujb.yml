@@ -75,6 +75,7 @@ jobs:
           python -m pytest -q \
             tests/test_source_reconciliation.py \
             tests/test_forecast_data.py \
+            tests/test_forecast_evaluation.py \
             tests/test_ujb_unit_mapping.py
 
       - name: Validate real hybrid pipeline
