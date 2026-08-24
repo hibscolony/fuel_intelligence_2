@@ -56,9 +56,6 @@ jobs:
             echo "Tidak ada perubahan data UJB, skip commit."
           else
             git commit -m "chore: update UJB snapshot and history [skip ci]"
-            # Branch dapat maju setelah checkout (mis. ada commit kode baru).
-            # Rebase commit data ke HEAD remote terbaru sebelum push agar tidak
-            # gagal dengan non-fast-forward / fetch-first.
             git pull --rebase origin "${GITHUB_REF_NAME}"
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
@@ -68,6 +65,14 @@ jobs:
       - name: Install hybrid validation dependencies
         if: github.event_name == 'workflow_dispatch'
         run: pip install -r requirements.txt
+
+      - name: Compile forecast modules
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          python -m py_compile \
+            src/forecast_evaluation.py \
+            src/analytics.py \
+            pages/forecast_monitoring.py
 
       - name: Run source-aware regression tests
         if: github.event_name == 'workflow_dispatch'
