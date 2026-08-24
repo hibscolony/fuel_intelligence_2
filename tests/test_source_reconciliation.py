@@ -103,6 +103,25 @@ def test_forklift_ujb_is_used_when_excel_support_missing():
     assert forklift.iloc[0]["source_selection_reason"] == "UJB_FORKLIFT_FALLBACK_NO_EXCEL_SUPPORT"
 
 
+def test_unapproved_ujb_category_is_quarantined_from_total_but_audited():
+    excel = _df([
+        {"date": "2026-08-18", "equipment_category": "RTGC", "equipment_id": "01", "fuel_liter": 500.0},
+    ])
+    ujb = _df([
+        {"date": "2026-08-18", "equipment_category": "NEW_VENDOR_TYPE", "equipment_id": "X1", "fuel_liter": 33.0},
+    ])
+
+    result = reconcile_excel_and_ujb(excel, ujb)
+    assert "NEW_VENDOR_TYPE" not in set(result.selected_df["equipment_category"])
+
+    suppressed = result.audit_df[
+        (result.audit_df["source_system"] == "UJB")
+        & (result.audit_df["selection_reason"] == "UJB_UNAPPROVED_CATEGORY_SUPPRESSED")
+    ].iloc[0]
+    assert suppressed["suppressed_rows"] == 1
+    assert suppressed["suppressed_liter"] == 33.0
+
+
 def test_audit_reports_suppressed_excel_volume():
     excel = _df([
         {"date": "2026-08-18", "equipment_category": "BUS", "equipment_id": "01", "fuel_liter": 50.0},
