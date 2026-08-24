@@ -15,7 +15,8 @@ if str(_ROOT) not in sys.path:
 import config
 from src.analytics import (
     get_forecast_monitoring, get_forecast_for_date,
-    get_forecast_training_series, get_model_backtest, get_cross_year_validation, get_available_years,
+    get_forecast_training_series, get_model_backtest, get_multi_horizon_backtest,
+    get_cross_year_validation, get_available_years,
 )
 from src.formatting import format_liter, format_percentage, format_number
 from src import ui
@@ -47,25 +48,29 @@ st.html('</div>')
 st.markdown("<br>", unsafe_allow_html=True)
 
 # =============================================================================
-# BACKTEST RESULTS
+# BACKTEST RESULTS — D+1 diagnostics only
 # =============================================================================
 backtest   = get_model_backtest(model_name, config.FORECAST_BACKTEST_DAYS)
 bt_summary = backtest["summary"]
 bt_df      = backtest["forecast_df"]
 bt_rolling = backtest["rolling_perf"]
 
-ui.section_header(f"Forecast Performance — {config.FORECAST_MODEL_CHOICES[model_name]}")
-st.caption(f"Backtest walk-forward 1-hari-ke-depan pada {config.FORECAST_BACKTEST_DAYS} hari terakhir.")
+ui.section_header(f"Forecast Performance D+1 — {config.FORECAST_MODEL_CHOICES[model_name]}")
+st.caption(
+    f"Backtest walk-forward 1-hari-ke-depan pada {config.FORECAST_BACKTEST_DAYS} hari terakhir. "
+    "Metrik di bagian ini hanya menilai D+1; jangan gunakan WAPE D+1 untuk menyimpulkan "
+    "akurasi D+30, D+60, atau D+90. Evaluasi multi-horizon tersedia di bawah."
+)
 
 if backtest["drift_warning"]:
     st.warning(backtest["drift_warning"], icon="⚠️")
 
 # KPI cards
 kc1, kc2, kc3, kc4, kc5 = st.columns(5)
-with kc1: ui.metric_card("MAE",          format_liter(bt_summary.mae))
-with kc2: ui.metric_card("RMSE",         format_liter(bt_summary.rmse))
-with kc3: ui.metric_card("WAPE",         format_percentage(bt_summary.wape))
-with kc4: ui.metric_card("Bias",         format_liter(bt_summary.bias))
+with kc1: ui.metric_card("MAE D+1",          format_liter(bt_summary.mae))
+with kc2: ui.metric_card("RMSE D+1",         format_liter(bt_summary.rmse))
+with kc3: ui.metric_card("WAPE D+1",         format_percentage(bt_summary.wape))
+with kc4: ui.metric_card("Bias D+1",         format_liter(bt_summary.bias))
 with kc5: ui.metric_card("Interval Cov.", format_percentage(bt_summary.interval_coverage_pct))
 
 st.markdown("<br>", unsafe_allow_html=True)
@@ -77,15 +82,15 @@ sev = sev_map.get(status_val, "info")
 badge_html = ui.status_badge(status_val, sev)
 st.markdown(
     f'<div style="font-size:0.85rem;color:#71869B;font-weight:600;margin-bottom:1.25rem;">'
-    f'Model Status &nbsp; {badge_html}</div>',
+    f'Model Status D+1 &nbsp; {badge_html}</div>',
     unsafe_allow_html=True,
 )
 
 # =============================================================================
 # ACTUAL vs FORECAST CHART
 # =============================================================================
-ui.section_header("Actual vs Forecast")
-st.caption("Perbandingan nilai historis aktual dengan prediksi model.")
+ui.section_header("Actual vs Forecast D+1")
+st.caption("Perbandingan nilai historis aktual dengan prediksi satu hari ke depan.")
 
 fig_bt = go.Figure()
 fig_bt.add_trace(go.Scatter(
@@ -116,7 +121,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 # =============================================================================
 # RESIDUAL & ROLLING WAPE
 # =============================================================================
-ui.section_header("Analisis Residual & Rolling WAPE")
+ui.section_header("Analisis Residual & Rolling WAPE D+1")
 col1, col2 = st.columns(2)
 
 with col1:
@@ -151,11 +156,94 @@ with col2:
     st.plotly_chart(fig3, use_container_width=True)
 
 st.download_button(
-    f"Download Backtest {config.FORECAST_MODEL_CHOICES[model_name]} (CSV)",
+    f"Download Backtest D+1 {config.FORECAST_MODEL_CHOICES[model_name]} (CSV)",
     bt_df.to_csv(index=False),
-    f"forecast_backtest_{model_name}.csv",
+    f"forecast_backtest_d1_{model_name}.csv",
     "text/csv",
 )
+
+st.markdown("<br><br>", unsafe_allow_html=True)
+
+# =============================================================================
+# MULTI-HORIZON ROLLING-ORIGIN EVALUATION
+# =============================================================================
+ui.section_header("Performa per Forecast Horizon")
+st.caption(
+    "Rolling-origin evaluation menguji model secara terpisah pada D+1, D+3, D+7, D+14, "
+    "D+30, D+60, dan D+90. Setiap origin hanya memakai data yang sudah tersedia sampai "
+    "tanggal tersebut, sehingga WAPE tiap horizon bisa dibandingkan secara lebih jujur."
+)
+
+with st.spinner("Menghitung multi-horizon backtest..."):
+    multi = get_multi_horizon_backtest(model_name, evaluation_days=180, origin_step_days=14)
+
+mh_summary = multi["summary"]
+mh_raw = multi["backtest_df"]
+mh_quantiles = multi["residual_quantiles"]
+
+if mh_summary.empty:
+    st.warning("Belum cukup data untuk evaluasi multi-horizon model ini.")
+else:
+    def _metric_for_horizon(h, col):
+        row = mh_summary[mh_summary["horizon_days"] == h]
+        return None if row.empty else float(row.iloc[0][col])
+
+    mh1, mh7, mh30, mh90 = st.columns(4)
+    for col, h in [(mh1, 1), (mh7, 7), (mh30, 30), (mh90, 90)]:
+        value = _metric_for_horizon(h, "wape")
+        with col:
+            ui.metric_card(f"WAPE D+{h}", "N/A" if value is None else format_percentage(value))
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    mh_display = mh_summary.rename(columns={
+        "horizon_days": "Horizon (hari)",
+        "n_forecasts": "N Forecast",
+        "mae": "MAE (L)",
+        "rmse": "RMSE (L)",
+        "wape": "WAPE (%)",
+        "bias": "Bias (L)",
+    }).copy()
+    for col in ["MAE (L)", "RMSE (L)", "Bias (L)"]:
+        mh_display[col] = mh_display[col].round(1)
+    mh_display["WAPE (%)"] = mh_display["WAPE (%)"].round(2)
+
+    mh_left, mh_right = st.columns([1.1, 1])
+    with mh_left:
+        st.dataframe(mh_display, use_container_width=True, hide_index=True)
+    with mh_right:
+        fig_h = px.line(
+            mh_summary,
+            x="horizon_days",
+            y="wape",
+            markers=True,
+            labels={"horizon_days": "Forecast Horizon (hari)", "wape": "WAPE (%)"},
+            color_discrete_sequence=["#3977C8"],
+        )
+        fig_h = ui.format_chart(fig_h)
+        fig_h.update_layout(height=340)
+        st.plotly_chart(fig_h, use_container_width=True)
+
+    st.caption(
+        "Kurva ini memperlihatkan degradasi akurasi ketika horizon bertambah. "
+        "Residual quantile dihitung terpisah per horizon sebagai fondasi prediction interval yang horizon-aware."
+    )
+
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        st.download_button(
+            "Download Multi-Horizon Backtest (CSV)",
+            mh_raw.to_csv(index=False),
+            f"forecast_multi_horizon_{model_name}.csv",
+            "text/csv",
+        )
+    with dl2:
+        st.download_button(
+            "Download Residual Quantile per Horizon (CSV)",
+            mh_quantiles.to_csv(index=False),
+            f"forecast_residual_quantiles_{model_name}.csv",
+            "text/csv",
+        )
 
 st.markdown("<br><br>", unsafe_allow_html=True)
 
