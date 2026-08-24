@@ -16,6 +16,7 @@ import config
 from src.analytics import (
     get_forecast_monitoring, get_forecast_for_date,
     get_forecast_training_series, get_model_backtest, get_multi_horizon_backtest,
+    get_model_horizon_leaderboard,
     get_cross_year_validation, get_available_years,
 )
 from src.formatting import format_liter, format_percentage, format_number
@@ -65,7 +66,6 @@ st.caption(
 if backtest["drift_warning"]:
     st.warning(backtest["drift_warning"], icon="⚠️")
 
-# KPI cards
 kc1, kc2, kc3, kc4, kc5 = st.columns(5)
 with kc1: ui.metric_card("MAE D+1",          format_liter(bt_summary.mae))
 with kc2: ui.metric_card("RMSE D+1",         format_liter(bt_summary.rmse))
@@ -75,7 +75,6 @@ with kc5: ui.metric_card("Interval Cov.", format_percentage(bt_summary.interval_
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# Model status badge
 status_val = bt_summary.model_health_status or "—"
 sev_map = {"HEALTHY": "success", "MONITOR": "warning", "CRITICAL": "danger", "INSUFFICIENT_DATA": "neutral"}
 sev = sev_map.get(status_val, "info")
@@ -226,7 +225,8 @@ else:
 
     st.caption(
         "Kurva ini memperlihatkan degradasi akurasi ketika horizon bertambah. "
-        "Residual quantile dihitung terpisah per horizon sebagai fondasi prediction interval yang horizon-aware."
+        "Residual quantile dihitung terpisah per horizon dan dipakai oleh simulator "
+        "untuk prediction interval horizon-aware. Kalibrasi masih empirical dari backtest yang sama."
     )
 
     dl1, dl2 = st.columns(2)
@@ -244,6 +244,98 @@ else:
             f"forecast_residual_quantiles_{model_name}.csv",
             "text/csv",
         )
+
+st.markdown("<br><br>", unsafe_allow_html=True)
+
+# =============================================================================
+# ALL-MODEL LEADERBOARD BY HORIZON
+# =============================================================================
+ui.section_header("Model Terbaik per Horizon")
+st.caption(
+    "Tidak ada asumsi satu model terbaik untuk semua horizon. Ranking dihitung terpisah "
+    "berdasarkan WAPE, lalu MAE dan |bias| sebagai tie-breaker. Evaluasi lengkap diprioritaskan."
+)
+
+if st.button("Bandingkan Semua Model", key="run_horizon_leaderboard", type="secondary"):
+    st.session_state["show_horizon_leaderboard"] = True
+
+if st.session_state.get("show_horizon_leaderboard", False):
+    with st.spinner("Membandingkan seluruh model pada horizon yang sama..."):
+        comparison = get_model_horizon_leaderboard(
+            evaluation_days=180,
+            origin_step_days=30,
+        )
+
+    winners = comparison["winners"]
+    leaderboard = comparison["leaderboard"]
+    errors = comparison["errors"]
+
+    if winners.empty:
+        st.warning("Belum ada model yang berhasil dievaluasi pada seluruh horizon.")
+    else:
+        winner_lookup = winners.set_index("horizon_days")
+        card_horizons = [1, 7, 30, 60, 90]
+        winner_cols = st.columns(len(card_horizons))
+        for col, h in zip(winner_cols, card_horizons):
+            with col:
+                if h in winner_lookup.index:
+                    row = winner_lookup.loc[h]
+                    ui.metric_card(
+                        f"Best D+{h}",
+                        str(row["model_label"]),
+                        helper=f"WAPE {float(row['wape']):.2f}%",
+                    )
+                else:
+                    ui.metric_card(f"Best D+{h}", "N/A")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        board_display = leaderboard.copy()
+        board_display["model_label"] = board_display["model_name"].map(config.FORECAST_MODEL_CHOICES).fillna(board_display.get("model_label"))
+        board_display = board_display.rename(columns={
+            "horizon_days": "Horizon",
+            "rank": "Rank",
+            "model_label": "Model",
+            "n_forecasts": "N Forecast",
+            "wape": "WAPE (%)",
+            "mae": "MAE (L)",
+            "rmse": "RMSE (L)",
+            "bias": "Bias (L)",
+            "evaluation_complete": "Eval Lengkap",
+        })
+        keep_cols = ["Horizon", "Rank", "Model", "N Forecast", "WAPE (%)", "MAE (L)", "RMSE (L)", "Bias (L)", "Eval Lengkap"]
+        board_display = board_display[keep_cols]
+        board_display["WAPE (%)"] = board_display["WAPE (%)"].round(2)
+        for c in ["MAE (L)", "RMSE (L)", "Bias (L)"]:
+            board_display[c] = board_display[c].round(1)
+        st.dataframe(board_display, use_container_width=True, hide_index=True)
+
+        fig_models = px.line(
+            leaderboard,
+            x="horizon_days",
+            y="wape",
+            color="model_label",
+            markers=True,
+            labels={
+                "horizon_days": "Forecast Horizon (hari)",
+                "wape": "WAPE (%)",
+                "model_label": "Model",
+            },
+        )
+        fig_models = ui.format_chart(fig_models)
+        fig_models.update_layout(height=420)
+        st.plotly_chart(fig_models, use_container_width=True)
+
+        st.download_button(
+            "Download Leaderboard Semua Model (CSV)",
+            leaderboard.to_csv(index=False),
+            "forecast_model_horizon_leaderboard.csv",
+            "text/csv",
+        )
+
+    if not errors.empty:
+        with st.expander("Model yang gagal dievaluasi", expanded=False):
+            st.dataframe(errors, use_container_width=True, hide_index=True)
 
 st.markdown("<br><br>", unsafe_allow_html=True)
 
@@ -280,6 +372,15 @@ with st.expander("Buka Simulator Prediksi", expanded=False):
                 with rc1: ui.metric_card("Prediksi",     format_liter(result["point"]))
                 with rc2: ui.metric_card("Batas Bawah", format_liter(result["lower"]))
                 with rc3: ui.metric_card("Batas Atas",  format_liter(result["upper"]))
+
+                if result.get("interval_method") == "rolling_origin_residual_quantile":
+                    interval_label = (
+                        f"Interval dikalibrasi dengan residual D+{result['interval_calibration_horizon']} "
+                        f"(n={result['interval_n_residuals']})."
+                    )
+                    if result.get("interval_extrapolated"):
+                        interval_label += " Target berada di luar horizon kalibrasi maksimum, jadi interval bersifat extrapolated."
+                    st.caption(interval_label)
 
                 if result.get("warning"):
                     st.warning(result["warning"])
