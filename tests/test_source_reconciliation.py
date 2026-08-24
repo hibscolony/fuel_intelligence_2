@@ -107,6 +107,43 @@ def test_forklift_ujb_is_used_when_excel_support_missing():
     assert forklift.iloc[0]["source_selection_reason"] == "UJB_FORKLIFT_FALLBACK_NO_EXCEL_SUPPORT"
 
 
+def test_modul_ujb_is_suppressed_when_excel_modul_exists_same_day():
+    excel = _df([
+        {"date": "2026-08-20", "equipment_category": "MODUL", "equipment_id": "GENSET", "fuel_liter": 80.0},
+    ])
+    ujb = _df([
+        {"date": "2026-08-20", "equipment_category": "MODUL", "equipment_id": "GENSET", "fuel_liter": 40.0, "source_event_key": "genset-1"},
+    ])
+
+    result = reconcile_excel_and_ujb(excel, ujb)
+    selected = result.selected_df[result.selected_df["equipment_category"] == "MODUL"]
+    assert len(selected) == 1
+    assert selected.iloc[0]["source_system"] == "EXCEL"
+    assert selected.iloc[0]["source_selection_reason"] == "EXCEL_MODUL_AUTHORITATIVE_WHEN_PRESENT"
+
+    suppressed = result.audit_df[
+        (result.audit_df["source_system"] == "UJB")
+        & (result.audit_df["selection_reason"] == "UJB_MODUL_SUPPRESSED_EXCEL_MODUL_PRESENT")
+    ].iloc[0]
+    assert suppressed["suppressed_rows"] == 1
+    assert suppressed["suppressed_liter"] == 40.0
+
+
+def test_modul_ujb_is_used_when_excel_modul_missing():
+    excel = _df([
+        {"date": "2026-08-20", "equipment_category": "RTGC", "equipment_id": "01", "fuel_liter": 500.0},
+    ])
+    ujb = _df([
+        {"date": "2026-08-20", "equipment_category": "MODUL", "equipment_id": "GENSET", "fuel_liter": 40.0, "source_event_key": "genset-1"},
+    ])
+
+    result = reconcile_excel_and_ujb(excel, ujb)
+    modul = result.selected_df[result.selected_df["equipment_category"] == "MODUL"]
+    assert len(modul) == 1
+    assert modul.iloc[0]["source_system"] == "UJB"
+    assert modul.iloc[0]["source_selection_reason"] == "UJB_MODUL_FALLBACK_NO_EXCEL_MODUL"
+
+
 def test_unapproved_ujb_category_is_quarantined_from_total_but_audited():
     excel = _df([
         {"date": "2026-08-18", "equipment_category": "RTGC", "equipment_id": "01", "fuel_liter": 500.0},
