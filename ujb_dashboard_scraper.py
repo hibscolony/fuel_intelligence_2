@@ -5,9 +5,11 @@ Scraper browser-automation untuk report UJB JICT.
 
 Catatan penting:
 - Tidak mengandalkan API JSON tersembunyi; data dibaca dari tabel HTML.
-- Pagination dibuat kompatibel dengan DataTables lama (<a> Next) maupun
-  DataTables baru (<button> Next).
+- Pagination kompatibel dengan DataTables lama (<a> Next) dan baru (<button> Next).
+- Rentang tanggal dicari secara defensif pada beberapa pola form umum.
+- Default window memakai Asia/Jakarta, bukan timezone runner GitHub Actions.
 - Taxonomy unit dinormalisasi lewat src.ujb_unit_mapping.
+- Output terdiri dari snapshot terbaru + history persisten yang didedup per event.
 """
 from __future__ import annotations
 
@@ -16,10 +18,12 @@ import os
 import re
 from datetime import datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
+from src.ujb_history import make_source_event_key, write_snapshot_and_history
 from src.ujb_unit_mapping import parse_ujb_unit
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -27,6 +31,7 @@ logger = logging.getLogger("ujb_scraper")
 
 BASE_URL = "https://dashboard.ujbgroup.com"
 REPORT_URL = f"{BASE_URL}/report/custom_jict"
+JICT_TIMEZONE = ZoneInfo("Asia/Jakarta")
 
 USERNAME = os.environ.get("UJB_USERNAME")
 PASSWORD = os.environ.get("UJB_PASSWORD")
@@ -57,19 +62,153 @@ def login(page: Page, username: str, password: str) -> None:
 
     if "login" in page.url.lower():
         raise RuntimeError(
-            "Masih di halaman login setelah submit -- cek username/password, "
-            "captcha, atau OTP."
+            "Masih di halaman login setelah submit -- cek username/password, captcha, atau OTP."
         )
     logger.info("Login berhasil.")
 
 
 def _parse_unit(unit: str) -> tuple[str, str]:
-    """Compatibility wrapper untuk parser taxonomy UJB terpusat."""
     return parse_ujb_unit(unit)
 
 
+def _wait_after_filter(page: Page) -> None:
+    page.wait_for_timeout(700)
+    try:
+        page.wait_for_load_state("networkidle", timeout=5000)
+    except PlaywrightTimeoutError:
+        pass
+
+
+def _input_metadata(locator) -> str:
+    parts = []
+    for attr in ("type", "name", "id", "placeholder", "aria-label"):
+        try:
+            value = locator.get_attribute(attr)
+        except Exception:
+            value = None
+        if value:
+            parts.append(f"{attr}={value}")
+    return " ".join(parts)
+
+
+def _visible_inputs(page: Page) -> list:
+    inputs = page.locator("input")
+    out = []
+    for i in range(inputs.count()):
+        loc = inputs.nth(i)
+        try:
+            if loc.is_visible() and (loc.get_attribute("type") or "text").lower() not in {
+                "hidden", "password", "submit", "button", "checkbox", "radio"
+            }:
+                out.append(loc)
+        except Exception:
+            continue
+    return out
+
+
+def _trigger_filter(page: Page, anchor=None) -> None:
+    """Submit/filter dengan tombol yang masuk akal, fallback Enter pada input."""
+    action_re = re.compile(r"filter|apply|search|cari|tampil|proses|submit", re.I)
+    buttons = page.get_by_role("button", name=action_re)
+    for i in range(buttons.count()):
+        btn = buttons.nth(i)
+        try:
+            if btn.is_visible() and not btn.is_disabled():
+                btn.click()
+                _wait_after_filter(page)
+                return
+        except Exception:
+            continue
+
+    if anchor is not None:
+        try:
+            anchor.press("Enter")
+        except Exception:
+            pass
+    _wait_after_filter(page)
+
+
+def _format_range_like_current(current_value: str, date_from: str, date_to: str) -> str:
+    """Pertahankan format text daterangepicker bila bisa diinfer dari value sekarang."""
+    current = (current_value or "").strip()
+    start = pd.Timestamp(date_from)
+    end = pd.Timestamp(date_to)
+
+    if re.search(r"\d{2}/\d{2}/\d{4}", current):
+        left = start.strftime("%d/%m/%Y")
+        right = end.strftime("%d/%m/%Y")
+    else:
+        left = start.strftime("%Y-%m-%d")
+        right = end.strftime("%Y-%m-%d")
+
+    separator = " to " if re.search(r"\bto\b", current, re.I) else " - "
+    return f"{left}{separator}{right}"
+
+
+def apply_date_range(page: Page, date_from: str, date_to: str) -> str:
+    """Coba terapkan date range pada beberapa pola form umum.
+
+    Return nama strategi yang berhasil dipakai. Jika tidak ada input yang cocok,
+    return ``not_found`` dan log metadata input untuk diagnosis run berikutnya.
+    """
+    visible = _visible_inputs(page)
+
+    # 1) HTML-native date inputs: paling deterministik.
+    date_inputs = [loc for loc in visible if (loc.get_attribute("type") or "").lower() == "date"]
+    if len(date_inputs) >= 2:
+        date_inputs[0].fill(date_from)
+        date_inputs[1].fill(date_to)
+        _trigger_filter(page, date_inputs[1])
+        logger.info("Date filter diterapkan via dua input type=date: %s s.d. %s", date_from, date_to)
+        return "two_html_date_inputs"
+
+    # 2) Dua input text yang metadata-nya menunjukkan start/from dan end/to.
+    start_re = re.compile(r"(^|[_\- ])(from|start|awal)([_\- ]|$)|date.?from|start.?date|tanggal.?awal", re.I)
+    end_re = re.compile(r"(^|[_\- ])(to|end|akhir)([_\- ]|$)|date.?to|end.?date|tanggal.?akhir", re.I)
+    start_input = None
+    end_input = None
+    for loc in visible:
+        meta = _input_metadata(loc)
+        if start_input is None and start_re.search(meta):
+            start_input = loc
+        if end_input is None and end_re.search(meta):
+            end_input = loc
+
+    if start_input is not None and end_input is not None:
+        start_input.fill(date_from)
+        end_input.fill(date_to)
+        _trigger_filter(page, end_input)
+        logger.info("Date filter diterapkan via pasangan start/end input: %s s.d. %s", date_from, date_to)
+        return "named_start_end_inputs"
+
+    # 3) Satu text input daterangepicker.
+    range_re = re.compile(r"date|tanggal|range|period|periode", re.I)
+    for loc in visible:
+        meta = _input_metadata(loc)
+        if not range_re.search(meta):
+            continue
+        try:
+            current = loc.input_value()
+            requested = _format_range_like_current(current, date_from, date_to)
+            loc.fill(requested)
+            _trigger_filter(page, loc)
+            logger.info(
+                "Date filter diterapkan via single range input (%s): %s",
+                meta or "metadata kosong", requested,
+            )
+            return "single_range_input"
+        except Exception as exc:
+            logger.debug("Kandidat date range gagal: %s", exc)
+
+    diagnostics = [_input_metadata(loc) for loc in visible]
+    logger.warning(
+        "Input date range tidak ditemukan. Visible input metadata: %s",
+        diagnostics[:12],
+    )
+    return "not_found"
+
+
 def _numeric_select_options(select_locator) -> list[int]:
-    """Ambil option integer dari satu <select>; kosong bila bukan page-length selector."""
     try:
         texts = select_locator.locator("option").all_text_contents()
     except Exception:
@@ -78,12 +217,7 @@ def _numeric_select_options(select_locator) -> list[int]:
 
 
 def set_entries_per_page_max(page: Page) -> Optional[int]:
-    """Set page length DataTables ke angka terbesar yang tersedia.
-
-    Implementasi lama mencari satu ``select`` dengan regex pada seluruh text
-    node. Itu rapuh. Sekarang semua select diperiksa dan kandidat dengan >=2
-    option numerik diperlakukan sebagai page-length selector.
-    """
+    """Set page length DataTables ke angka terbesar yang tersedia."""
     selects = page.locator("select")
     for i in range(selects.count()):
         candidate = selects.nth(i)
@@ -94,7 +228,6 @@ def set_entries_per_page_max(page: Page) -> Optional[int]:
         max_entries = max(options)
         try:
             candidate.select_option(str(max_entries))
-            # DataTables bisa client-side (tanpa network), jadi beri waktu DOM update.
             page.wait_for_timeout(300)
             try:
                 page.wait_for_load_state("networkidle", timeout=3000)
@@ -110,12 +243,6 @@ def set_entries_per_page_max(page: Page) -> Optional[int]:
 
 
 def _next_control(page: Page):
-    """Cari kontrol Next pada DataTables versi lama maupun baru.
-
-    DataTables 1.x lazim memakai ``<a>Next</a>``, sedangkan DataTables 2.x
-    lazim memakai ``<button>Next</button>``. Bug lama hanya mencari role link,
-    sehingga scrape berhenti di page pertama (sering tepat 100 row).
-    """
     name_re = re.compile(r"^(next|berikutnya|selanjutnya)\s*[›»]?$", re.I)
 
     button = page.get_by_role("button", name=name_re)
@@ -126,11 +253,8 @@ def _next_control(page: Page):
     if link.count() > 0:
         return link.first
 
-    # Fallback class DataTables umum. Tidak memakai text global agar tidak
-    # salah mengambil kontrol lain di halaman.
     css = page.locator(
-        ".dt-paging-button.next, .paginate_button.next, "
-        "button.next, a.next"
+        ".dt-paging-button.next, .paginate_button.next, button.next, a.next"
     )
     if css.count() > 0:
         return css.first
@@ -139,7 +263,6 @@ def _next_control(page: Page):
 
 
 def _control_is_disabled(control) -> bool:
-    """Deteksi disabled pada elemen Next atau wrapper parent-nya."""
     if control is None:
         return True
 
@@ -161,7 +284,6 @@ def _control_is_disabled(control) -> bool:
 
 
 def _row_signature(body_rows) -> str:
-    """Signature row pertama untuk memastikan pagination benar-benar berpindah."""
     if body_rows.count() == 0:
         return ""
     try:
@@ -171,14 +293,7 @@ def _row_signature(body_rows) -> str:
 
 
 def scrape_report_table(page: Page) -> pd.DataFrame:
-    """Baca SEMUA halaman tabel report UJB.
-
-    Safety:
-    - mendukung Next link maupun button;
-    - berhenti saat Next disabled;
-    - memverifikasi row pertama berubah setelah klik agar tidak infinite loop;
-    - guard maksimal 200 halaman.
-    """
+    """Baca SEMUA halaman tabel report UJB."""
     all_rows: list[dict] = []
     headers: Optional[list[str]] = None
     page_num = 1
@@ -196,8 +311,7 @@ def scrape_report_table(page: Page) -> pd.DataFrame:
             else:
                 headers = [f"Col_{i}" for i in range(first_row_cell_count)]
                 logger.warning(
-                    "Jumlah kolom tabel (%s) != KNOWN_REPORT_HEADERS (%s). "
-                    "Pakai Col_0... sementara.",
+                    "Jumlah kolom tabel (%s) != KNOWN_REPORT_HEADERS (%s). Pakai Col_0... sementara.",
                     first_row_cell_count,
                     len(KNOWN_REPORT_HEADERS),
                 )
@@ -213,9 +327,7 @@ def scrape_report_table(page: Page) -> pd.DataFrame:
 
         logger.info(
             "Halaman %s: %s baris terkumpul (total: %s).",
-            page_num,
-            row_count,
-            len(all_rows),
+            page_num, row_count, len(all_rows),
         )
 
         next_btn = _next_control(page)
@@ -227,9 +339,6 @@ def scrape_report_table(page: Page) -> pd.DataFrame:
             break
 
         next_btn.click()
-
-        # DataTables biasanya memperbarui DOM tanpa full page navigation.
-        # Tunggu sampai row pertama berubah; networkidle saja tidak cukup.
         try:
             page.wait_for_function(
                 """prev => {
@@ -254,15 +363,48 @@ def scrape_report_table(page: Page) -> pd.DataFrame:
             break
 
     result = pd.DataFrame(all_rows)
-
-    # Guard diagnostik: tepat sama dengan page length maksimum adalah pola yang
-    # patut dicurigai bila Next gagal ditemukan. Tidak mengubah data, hanya log.
     if len(result) == 100:
         logger.warning(
             "Hasil tepat 100 row. Jika report seharusnya lebih banyak, cek log pagination/markup Next."
         )
-
     return result
+
+
+def _audit_and_filter_window(raw_df: pd.DataFrame, date_from: str, date_to: str) -> pd.DataFrame:
+    """Log coverage tanggal dan buang event di luar window yang diminta."""
+    if raw_df.empty or "Date" not in raw_df.columns:
+        return raw_df
+
+    parsed = pd.to_datetime(raw_df["Date"], errors="coerce").dt.normalize()
+    requested_start = pd.Timestamp(date_from)
+    requested_end = pd.Timestamp(date_to)
+    valid_dates = parsed.dropna()
+
+    if not valid_dates.empty:
+        observed_start = valid_dates.min()
+        observed_end = valid_dates.max()
+        logger.info(
+            "Coverage tanggal hasil UJB: %s s.d. %s (requested %s s.d. %s).",
+            observed_start.date(), observed_end.date(), requested_start.date(), requested_end.date(),
+        )
+        if observed_start > requested_start:
+            logger.warning(
+                "Tanggal paling awal hasil (%s) lebih baru dari requested start (%s). "
+                "Bisa berarti tidak ada transaksi pada hari awal, atau filter UI belum diterapkan penuh.",
+                observed_start.date(), requested_start.date(),
+            )
+        if observed_end < requested_end:
+            logger.warning(
+                "Tanggal paling akhir hasil (%s) lebih lama dari requested end (%s).",
+                observed_end.date(), requested_end.date(),
+            )
+
+    in_window = parsed.between(requested_start, requested_end, inclusive="both")
+    outside_count = int((~in_window & parsed.notna()).sum())
+    if outside_count:
+        logger.warning("Membuang %s row di luar requested date window.", outside_count)
+
+    return raw_df.loc[in_window | parsed.isna()].reset_index(drop=True)
 
 
 def transform_to_dashboard_schema(
@@ -271,9 +413,9 @@ def transform_to_dashboard_schema(
 ) -> pd.DataFrame:
     """Ubah tabel vendor ke skema long-form Fuel Intelligence."""
     output_columns = [
-        "date", "year", "month", "equipment_category", "equipment_id",
-        "fuel_liter", "status_text", "source_sheet", "source_file",
-        "source_row", "data_status", "issue_code",
+        "date", "event_time", "year", "month", "equipment_category", "equipment_id",
+        "fuel_liter", "status_text", "source_sheet", "source_file", "source_row",
+        "source_event_key", "data_status", "issue_code",
     ]
     if raw_df.empty:
         return pd.DataFrame(columns=output_columns)
@@ -282,6 +424,7 @@ def transform_to_dashboard_schema(
     df.columns = [c.strip() for c in df.columns]
 
     date_col = next((c for c in df.columns if c.lower() == "date"), None)
+    time_col = next((c for c in df.columns if c.lower() == "time"), None)
     unit_col = next((c for c in df.columns if c.lower() == "unit"), None)
     volume_col = next((c for c in df.columns if "volume" in c.lower()), None)
     status_col = next((c for c in df.columns if c.lower() == "status"), None)
@@ -296,11 +439,17 @@ def transform_to_dashboard_schema(
     if missing_semantic:
         raise ValueError(f"Kolom report UJB tidak dikenali: {missing_semantic}")
 
+    # Event key dibuat dari row vendor SEBELUM taxonomy/formatting diubah.
+    df["source_event_key"] = raw_df.apply(
+        lambda row: make_source_event_key(row.to_dict()), axis=1
+    )
+
     parsed = df[unit_col].astype(str).apply(_parse_unit)
     df["equipment_category"] = parsed.apply(lambda t: t[0])
     df["equipment_id"] = parsed.apply(lambda t: t[1])
 
     df["date"] = pd.to_datetime(df[date_col], errors="coerce")
+    df["event_time"] = df[time_col].astype(str).str.strip() if time_col else ""
     df["fuel_liter"] = pd.to_numeric(
         df[volume_col].astype(str).str.replace(",", "", regex=False),
         errors="coerce",
@@ -322,19 +471,33 @@ def transform_to_dashboard_schema(
     return df[output_columns]
 
 
+def _default_date_window() -> tuple[str, str]:
+    today = datetime.now(JICT_TIMEZONE).date()
+    try:
+        lookback_days = max(1, int(os.environ.get("UJB_LOOKBACK_DAYS", "7")))
+    except ValueError:
+        lookback_days = 7
+    start = today - timedelta(days=lookback_days - 1)
+    return start.isoformat(), today.isoformat()
+
+
 def run_scrape(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     headless: bool = True,
 ) -> pd.DataFrame:
-    """Login, pilih rentang tanggal, scrape seluruh tabel, lalu transform."""
+    """Login, terapkan date range, scrape semua halaman, lalu transform."""
     if not USERNAME or not PASSWORD:
-        raise RuntimeError(
-            "UJB_USERNAME / UJB_PASSWORD belum di-set di environment variable."
-        )
+        raise RuntimeError("UJB_USERNAME / UJB_PASSWORD belum di-set di environment variable.")
 
-    date_from = date_from or (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    date_to = date_to or datetime.now().strftime("%Y-%m-%d")
+    default_from, default_to = _default_date_window()
+    date_from = date_from or default_from
+    date_to = date_to or default_to
+
+    start_ts = pd.Timestamp(date_from)
+    end_ts = pd.Timestamp(date_to)
+    if start_ts > end_ts:
+        raise ValueError("date_from tidak boleh lebih besar dari date_to.")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
@@ -344,22 +507,16 @@ def run_scrape(
             logger.info("Membuka halaman report: %s", REPORT_URL)
             page.goto(REPORT_URL, wait_until="networkidle")
 
-            try:
-                date_field = page.get_by_label(re.compile("date range", re.I)).first
-                date_field.fill(f"{date_from} to {date_to}")
-                page.keyboard.press("Enter")
-                page.wait_for_timeout(500)
-                try:
-                    page.wait_for_load_state("networkidle", timeout=5000)
-                except PlaywrightTimeoutError:
-                    pass
-                logger.info("Rentang tanggal diminta: %s s.d. %s", date_from, date_to)
-            except Exception as exc:
-                logger.info("Field date range tidak ditemukan/tidak diisi: %s", exc)
+            strategy = apply_date_range(page, date_from, date_to)
+            logger.info(
+                "Rentang tanggal diminta: %s s.d. %s (strategy=%s)",
+                date_from, date_to, strategy,
+            )
 
             set_entries_per_page_max(page)
             raw_df = scrape_report_table(page)
-            logger.info("Total baris ter-scrape: %s", len(raw_df))
+            raw_df = _audit_and_filter_window(raw_df, date_from, date_to)
+            logger.info("Total baris ter-scrape dalam requested window: %s", len(raw_df))
 
             return transform_to_dashboard_schema(raw_df)
         finally:
@@ -369,19 +526,17 @@ def run_scrape(
 if __name__ == "__main__":
     result_df = run_scrape(headless=True)
     print(result_df.head(20))
-    print(f"\nTotal baris: {len(result_df)}")
+    print(f"\nTotal baris snapshot: {len(result_df)}")
 
     output_dir = os.environ.get("UJB_OUTPUT_DIR")
-    if output_dir:
-        out_path = os.path.join(output_dir, "ujb_scraped_latest.csv")
-    else:
-        out_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "data",
-            "raw",
-            "ujb_scraped_latest.csv",
+    if not output_dir:
+        output_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "data", "raw"
         )
 
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    result_df.to_csv(out_path, index=False)
-    print(f"Tersimpan ke {out_path}")
+    stats = write_snapshot_and_history(result_df, output_dir)
+    print(f"Snapshot tersimpan: {stats['latest_path']} ({stats['latest_rows']} row)")
+    print(
+        f"History tersimpan: {stats['history_path']} "
+        f"({stats['history_rows']} unique event; +{stats['new_unique_rows']} event baru)"
+    )
