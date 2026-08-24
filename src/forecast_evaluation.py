@@ -6,6 +6,11 @@ Kerangka evaluasi forecasting multi-horizon dengan rolling origin.
 Tujuannya: jangan menilai forecast D+30/D+60/D+90 hanya dari backtest D+1.
 Setiap origin memakai data yang tersedia SAMPAI origin tersebut, lalu model
 memprediksi beberapa horizon sekaligus. Hasil diringkas terpisah per horizon.
+
+Residual rolling-origin juga dipakai sebagai dasar prediction interval yang
+horizon-aware. Kalibrasi saat ini masih berasal dari sampel backtest yang sama
+dengan evaluasi performa, jadi interval harus dilabeli sebagai empirical
+backtest calibration -- belum independent calibration set.
 """
 from __future__ import annotations
 
@@ -21,12 +26,7 @@ DEFAULT_EVAL_HORIZONS = (1, 3, 7, 14, 30, 60, 90)
 
 
 def validate_daily_history(history: pd.Series) -> pd.Series:
-    """Validasi bahwa history benar-benar deret kalender harian yang aman.
-
-    Forecast berbasis lag kalender tidak boleh menerima deret irregular atau
-    NaN hasil coverage gap. Jangan memperbaikinya dengan ``dropna`` karena itu
-    mengubah arti lag_7 dari 7 hari menjadi 7 observasi sebelumnya.
-    """
+    """Validasi bahwa history benar-benar deret kalender harian yang aman."""
     if not isinstance(history, pd.Series):
         raise TypeError("history harus berupa pandas Series.")
     if history.empty:
@@ -74,15 +74,7 @@ def build_multi_horizon_backtest(
     origin_step_days: int = 7,
     min_train_days: int = 60,
 ) -> pd.DataFrame:
-    """Rolling-origin backtest untuk beberapa forecast horizon.
-
-    Contoh satu origin:
-        train <= 2025-09-30
-        evaluasi D+1, D+3, D+7, D+14, D+30, ...
-
-    Origin berikutnya maju ``origin_step_days`` hari. Model hanya melihat data
-    sampai origin tersebut; aktual masa depan dipakai murni untuk evaluasi.
-    """
+    """Rolling-origin backtest untuk beberapa forecast horizon."""
     s = validate_daily_history(history)
     hs = _normalize_horizons(horizons)
     max_h = max(hs)
@@ -102,8 +94,6 @@ def build_multi_horizon_backtest(
             f"{min_train_days + max_h} hari, tersedia {n}."
         )
 
-    # Batasi origin ke jendela evaluasi terbaru, tetapi tetap sisakan seluruh
-    # max_h hari setelah origin untuk aktual pembanding.
     desired_first_origin = last_origin_pos - evaluation_days + 1
     first_origin_pos = max(min_origin_pos, desired_first_origin)
 
@@ -198,14 +188,95 @@ def residual_quantiles_by_horizon(backtest_df: pd.DataFrame,
 
 
 def choose_calibration_horizon(target_horizon: int, available_horizons: Iterable[int]) -> int:
-    """Pilih horizon kalibrasi konservatif: horizon terkecil >= target.
-
-    Contoh target D+5 memakai residual D+7; target D+20 memakai D+30.
-    Jika target melebihi semua horizon tersedia, gunakan horizon maksimum.
-    """
+    """Pilih horizon kalibrasi konservatif: horizon terkecil >= target."""
     target_horizon = int(target_horizon)
     hs = _normalize_horizons(available_horizons)
     for h in hs:
         if h >= target_horizon:
             return h
     return hs[-1]
+
+
+def apply_horizon_prediction_interval(
+    point_forecast: float,
+    target_horizon: int,
+    residual_quantiles: pd.DataFrame,
+    nonnegative: bool = True,
+) -> dict:
+    """Bangun empirical prediction interval sesuai forecast horizon.
+
+    Target yang berada di antara horizon evaluasi memakai horizon berikutnya
+    secara konservatif (D+5 -> residual D+7). Target di atas horizon terbesar
+    memakai horizon terbesar tetapi diberi ``interval_extrapolated=True``.
+    """
+    required = {"horizon_days", "lower_residual", "upper_residual", "n_residuals"}
+    missing = required.difference(residual_quantiles.columns)
+    if missing:
+        raise ValueError(f"Residual quantile tidak lengkap: {sorted(missing)}")
+    if residual_quantiles.empty:
+        raise ValueError("Residual quantile kosong; prediction interval belum bisa dikalibrasi.")
+
+    q = residual_quantiles.copy()
+    q["horizon_days"] = pd.to_numeric(q["horizon_days"], errors="coerce")
+    q = q.dropna(subset=["horizon_days"]).sort_values("horizon_days")
+    if q.empty:
+        raise ValueError("Tidak ada horizon residual yang valid.")
+
+    target_horizon = int(target_horizon)
+    available = tuple(q["horizon_days"].astype(int).tolist())
+    calibration_horizon = choose_calibration_horizon(target_horizon, available)
+    row = q[q["horizon_days"].astype(int).eq(calibration_horizon)].iloc[0]
+
+    point = float(point_forecast)
+    lower = point + float(row["lower_residual"])
+    upper = point + float(row["upper_residual"])
+    if nonnegative:
+        point = max(0.0, point)
+        lower = max(0.0, lower)
+        upper = max(0.0, upper)
+    if upper < lower:
+        lower, upper = upper, lower
+
+    return {
+        "point": point,
+        "lower": lower,
+        "upper": upper,
+        "interval_calibration_horizon": int(calibration_horizon),
+        "interval_n_residuals": int(row["n_residuals"]),
+        "interval_extrapolated": bool(target_horizon > max(available)),
+        "interval_method": "rolling_origin_residual_quantile",
+        "interval_calibration_independent": False,
+    }
+
+
+def rank_model_horizon_summaries(summary_df: pd.DataFrame) -> pd.DataFrame:
+    """Rank model secara TERPISAH untuk setiap horizon.
+
+    Ranking: evaluasi lengkap lebih dulu, lalu WAPE, MAE, |bias|, RMSE.
+    ``best_for_horizon`` tidak berarti model terbaik secara universal.
+    """
+    required = {"model_name", "horizon_days", "n_forecasts", "mae", "rmse", "wape", "bias"}
+    missing = required.difference(summary_df.columns)
+    if missing:
+        raise ValueError(f"Summary model-horizon tidak lengkap: {sorted(missing)}")
+    if summary_df.empty:
+        return summary_df.copy()
+
+    out = summary_df.copy()
+    for col in ["horizon_days", "n_forecasts", "mae", "rmse", "wape", "bias"]:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    out = out.dropna(subset=["model_name", "horizon_days", "n_forecasts", "wape", "mae"])
+    if out.empty:
+        return out
+
+    max_n = out.groupby("horizon_days")["n_forecasts"].transform("max")
+    out["evaluation_complete"] = out["n_forecasts"].eq(max_n)
+    out["abs_bias"] = out["bias"].abs()
+    out = out.sort_values(
+        ["horizon_days", "evaluation_complete", "wape", "mae", "abs_bias", "rmse", "model_name"],
+        ascending=[True, False, True, True, True, True, True],
+        na_position="last",
+    ).reset_index(drop=True)
+    out["rank"] = out.groupby("horizon_days").cumcount() + 1
+    out["best_for_horizon"] = out["rank"].eq(1)
+    return out
