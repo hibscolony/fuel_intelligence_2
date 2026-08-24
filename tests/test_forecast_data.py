@@ -1,7 +1,11 @@
 """Tests untuk pembentukan target harian forecasting."""
+import sys
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.forecast_data import build_daily_refueling_series, build_forecast_calendar_audit
 
 
