@@ -19,6 +19,11 @@ if str(_ROOT) not in sys.path:
 
 import config
 from src.data_cleaning import run_cleaning_pipeline
+from src.forecast_data import (
+    build_daily_refueling_series,
+    build_forecast_coverage_segments,
+    select_complete_daily_segment,
+)
 from src.source_reconciliation import MODUL_CATEGORY, UJB_PREFERRED_CATEGORIES
 from src.ujb_source import load_ujb_long_df
 
@@ -91,6 +96,52 @@ def _multi_source_group_count(cleaned: pd.DataFrame, categories: set[str]) -> in
     return int((source_counts > 1).sum())
 
 
+def _forecast_coverage_summary(cleaned: pd.DataFrame) -> dict:
+    full = build_daily_refueling_series(cleaned, strict_source_coverage=False)
+    gap_dates = full.index[full.isna()]
+    segments = build_forecast_coverage_segments(cleaned, model_ready_min_days=30)
+
+    cutoff = pd.Timestamp(config.FORECAST_TRAINING_CUTOFF)
+    training = select_complete_daily_segment(full, end_at=cutoff, min_days=60)
+    latest = select_complete_daily_segment(full, latest=True, min_days=1)
+
+    segment_records = []
+    for row in segments.to_dict(orient="records"):
+        segment_records.append({
+            "segment_id": int(row["segment_id"]),
+            "start_date": pd.Timestamp(row["start_date"]).strftime("%Y-%m-%d"),
+            "end_date": pd.Timestamp(row["end_date"]).strftime("%Y-%m-%d"),
+            "n_days": int(row["n_days"]),
+            "total_liter": float(row["total_liter"]),
+            "source_systems": str(row["source_systems"]),
+            "model_ready": bool(row["model_ready"]),
+            "is_latest": bool(row["is_latest"]),
+        })
+
+    return {
+        "calendar_start": full.index.min().strftime("%Y-%m-%d"),
+        "calendar_end": full.index.max().strftime("%Y-%m-%d"),
+        "gap_days": int(len(gap_dates)),
+        "gap_start": gap_dates.min().strftime("%Y-%m-%d") if len(gap_dates) else None,
+        "gap_end": gap_dates.max().strftime("%Y-%m-%d") if len(gap_dates) else None,
+        "gap_values_are_nan": bool(full.loc[gap_dates].isna().all()) if len(gap_dates) else True,
+        "training_segment": {
+            "start_date": training.index.min().strftime("%Y-%m-%d"),
+            "end_date": training.index.max().strftime("%Y-%m-%d"),
+            "n_days": int(len(training)),
+            "contains_nan": bool(training.isna().any()),
+        },
+        "latest_operational_segment": {
+            "start_date": latest.index.min().strftime("%Y-%m-%d"),
+            "end_date": latest.index.max().strftime("%Y-%m-%d"),
+            "n_days": int(len(latest)),
+            "contains_nan": bool(latest.isna().any()),
+            "model_ready_30d": bool(len(latest) >= 30),
+        },
+        "segments": segment_records,
+    }
+
+
 def main() -> int:
     if config.DATA_SOURCE_MODE != "hybrid":
         raise RuntimeError(
@@ -141,6 +192,8 @@ def main() -> int:
     coverage_start = pd.Timestamp(coverage_dates[0]).strftime("%Y-%m-%d") if coverage_dates else None
     coverage_end = pd.Timestamp(coverage_dates[-1]).strftime("%Y-%m-%d") if coverage_dates else None
 
+    forecast_coverage = _forecast_coverage_summary(cleaned)
+
     violations = {
         "direct_category_multi_source_groups": direct_category_multi_source_groups,
         "modul_multi_source_groups": modul_multi_source_groups,
@@ -148,6 +201,13 @@ def main() -> int:
         "unapproved_ujb_selected_rows": unapproved_selected_rows,
         "blank_source_selection_reason_rows": blank_reason_rows,
         "selected_liter_audit_mismatch": bool(selected_liter_diff > 1e-6),
+        "forecast_gap_was_imputed": bool(not forecast_coverage["gap_values_are_nan"]),
+        "forecast_training_segment_contains_nan": bool(
+            forecast_coverage["training_segment"]["contains_nan"]
+        ),
+        "forecast_latest_segment_contains_nan": bool(
+            forecast_coverage["latest_operational_segment"]["contains_nan"]
+        ),
     }
 
     passed = not any([
@@ -157,6 +217,9 @@ def main() -> int:
         violations["unapproved_ujb_selected_rows"],
         violations["blank_source_selection_reason_rows"],
         violations["selected_liter_audit_mismatch"],
+        violations["forecast_gap_was_imputed"],
+        violations["forecast_training_segment_contains_nan"],
+        violations["forecast_latest_segment_contains_nan"],
     ])
 
     summary = {
@@ -175,6 +238,7 @@ def main() -> int:
             "coverage_end": coverage_end,
             "coverage_days": int(len(coverage_dates)),
         },
+        "forecast_coverage": forecast_coverage,
         "violations": violations,
         "duplicate_event_key_examples": duplicate_event_key_examples,
         "source_reason_summary": _audit_reason_summary(audit),
