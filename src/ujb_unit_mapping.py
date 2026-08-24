@@ -10,11 +10,12 @@ Mapping yang sudah dikonfirmasi operasional:
 - HT -> HEAD_TRUCK
 - BUS -> BUS
 - HILUX / RANGGA / INOVA / ENGINEERING -> KEND_OPS
+- TRAGA / AMBULANCE / GALMON / POLISI -> KEND_OPS
 - plat B xxxx ... / AD xxxx ... -> KEND_OPS
+- GENSET -> MODUL
 - FRK -> FORKLIFT
 - RFK -> FORKLIFT (typo dari FRK)
-
-ELF belum digabung ke KEND_OPS karena klasifikasinya belum dikonfirmasi.
+- ELF -> ELF
 """
 from __future__ import annotations
 
@@ -28,12 +29,21 @@ PREFIX_TO_CATEGORY = {
     "RANGGA": "KEND_OPS",
     "INOVA": "KEND_OPS",
     "ENGINEERING": "KEND_OPS",
+    "TRAGA": "KEND_OPS",
+    "AMBULANCE": "KEND_OPS",
+    "GALMON": "KEND_OPS",
+    "POLISI": "KEND_OPS",
+    "GENSET": "MODUL",
     "FRK": "FORKLIFT",
     "RFK": "FORKLIFT",
     "ELF": "ELF",
 }
 
-KEND_OPS_NAMED_PREFIXES = {"HILUX", "RANGGA", "INOVA", "ENGINEERING"}
+KEND_OPS_NAMED_PREFIXES = {
+    "HILUX", "RANGGA", "INOVA", "ENGINEERING",
+    "TRAGA", "AMBULANCE", "GALMON", "POLISI",
+}
+MODUL_NAMED_PREFIXES = {"GENSET"}
 
 # Prefix plat yang sudah dikonfirmasi muncul pada kendaraan operasional UJB.
 # Dibuat konservatif agar prefix huruf lain tidak otomatis diklasifikasikan.
@@ -51,10 +61,12 @@ def parse_ujb_unit(unit: object) -> tuple[str, str]:
     """Parse string mentah kolom ``Unit`` menjadi (category, equipment_id).
 
     Untuk KEND_OPS berbasis nama/plat, equipment_id dipertahankan lengkap
-    (mis. ``HILUX 02``, ``INOVA DM``, ``ENGINEERING``, ``B 8137 OH``, atau
-    ``AD 8137 OH``) agar identifier pendek tidak bentrok antar jenis kendaraan.
-    Untuk FRK/RFK, ID numeriknya dipertahankan sehingga ``FRK 26`` dan
-    ``RFK 26`` menjadi unit kanonik yang sama: FORKLIFT / 26.
+    (mis. ``HILUX 02``, ``TRAGA``, ``AMBULANCE``, atau ``AD 8137 OH``)
+    agar identifier pendek tidak bentrok antar jenis kendaraan.
+    ``GENSET`` dipetakan ke kategori MODUL tetapi nama unitnya tetap
+    dipertahankan sebagai equipment_id. Untuk FRK/RFK, ID numeriknya
+    dipertahankan sehingga ``FRK 26`` dan ``RFK 26`` menjadi unit kanonik
+    yang sama: FORKLIFT / 26.
     """
     raw = _clean_spaces(unit)
     if not raw:
@@ -74,6 +86,9 @@ def parse_ujb_unit(unit: object) -> tuple[str, str]:
     if prefix in KEND_OPS_NAMED_PREFIXES:
         return "KEND_OPS", f"{prefix} {rest}".strip()
 
+    if prefix in MODUL_NAMED_PREFIXES:
+        return "MODUL", f"{prefix} {rest}".strip()
+
     # Fallback mempertahankan perilaku lama: kategori = prefix apa adanya,
     # equipment_id = bagian setelah prefix. Dengan begitu kategori baru tetap
     # terlihat dan bisa diaudit tanpa kehilangan record.
@@ -85,9 +100,11 @@ def normalize_ujb_category_and_id(category: object, equipment_id: object) -> tup
 
     Contoh legacy CSV:
       HILUX, 02          -> KEND_OPS, HILUX 02
-      RANGGA, 05         -> KEND_OPS, RANGGA 05
-      INOVA, DM          -> KEND_OPS, INOVA DM
-      ENGINEERING, ...   -> KEND_OPS, ENGINEERING ...
+      TRAGA, TRAGA       -> KEND_OPS, TRAGA
+      AMBULANCE, ...     -> KEND_OPS, AMBULANCE ...
+      GALMON, ...        -> KEND_OPS, GALMON ...
+      POLISI, ...        -> KEND_OPS, POLISI ...
+      GENSET, GENSET     -> MODUL, GENSET
       B, 8137 OH         -> KEND_OPS, B 8137 OH
       AD, 8137 OH        -> KEND_OPS, AD 8137 OH
       RFK, 26            -> FORKLIFT, 26
@@ -97,9 +114,14 @@ def normalize_ujb_category_and_id(category: object, equipment_id: object) -> tup
     eq = _clean_spaces(equipment_id)
 
     if cat in KEND_OPS_NAMED_PREFIXES:
-        if cat == "ENGINEERING" and (not eq or eq.upper() == "ENGINEERING"):
-            return "KEND_OPS", "ENGINEERING"
+        if not eq or eq.upper() == cat:
+            return "KEND_OPS", cat
         return "KEND_OPS", f"{cat} {eq}".strip()
+
+    if cat in MODUL_NAMED_PREFIXES:
+        if not eq or eq.upper() == cat:
+            return "MODUL", cat
+        return "MODUL", f"{cat} {eq}".strip()
 
     if cat in {"B", "AD"}:
         candidate = f"{cat} {eq}".strip()
