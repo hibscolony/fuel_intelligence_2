@@ -65,13 +65,17 @@ def build_daily_refueling_series(cleaned: pd.DataFrame,
     if source_rows.empty:
         raise ValueError("Tidak ada baris bertanggal valid untuk membangun deret forecast.")
 
-    first_date = source_rows["date"].min().normalize()
-    last_date = source_rows["date"].max().normalize()
+    # Forecast bekerja pada kalender HARIAN; timestamp intraday dari sumber
+    # berbeda harus terlebih dulu dipetakan ke tanggal kalender yang sama.
+    source_rows["date"] = source_rows["date"].dt.normalize()
+
+    first_date = source_rows["date"].min()
+    last_date = source_rows["date"].max()
     full_index = pd.date_range(first_date, last_date, freq="D")
 
     # Coverage sumber: keberadaan baris apa pun pada hari tersebut. Ini berbeda
     # dari keberadaan transaksi liter numerik.
-    daily_source_rows = source_rows.groupby(source_rows["date"].dt.normalize()).size()
+    daily_source_rows = source_rows.groupby("date").size()
     daily_source_rows = daily_source_rows.reindex(full_index, fill_value=0)
     source_gap_dates = daily_source_rows.index[daily_source_rows.eq(0)]
 
@@ -100,7 +104,7 @@ def build_daily_refueling_series(cleaned: pd.DataFrame,
     numeric = numeric.sort_values(sort_cols)
     numeric = numeric.drop_duplicates(subset=_FORECAST_DEDUP_KEYS, keep="first")
 
-    daily_fuel = numeric.groupby(numeric["date"].dt.normalize())["fuel_liter"].sum()
+    daily_fuel = numeric.groupby("date")["fuel_liter"].sum()
     series = daily_fuel.reindex(full_index)
 
     # Bila sumber hadir tetapi tak ada transaksi numerik layak, target yang
@@ -123,8 +127,9 @@ def build_forecast_calendar_audit(cleaned: pd.DataFrame) -> pd.DataFrame:
 
     df = cleaned.copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    source_rows = df[(df["date"].notna()) & (df["data_status"] != "INVALID_DATE")]
-    counts = source_rows.groupby(source_rows["date"].dt.normalize()).size().reindex(series.index, fill_value=0)
+    source_rows = df[(df["date"].notna()) & (df["data_status"] != "INVALID_DATE")].copy()
+    source_rows["date"] = source_rows["date"].dt.normalize()
+    counts = source_rows.groupby("date").size().reindex(series.index, fill_value=0)
 
     status = pd.Series("OBSERVED_REFUEL", index=series.index, dtype="object")
     status.loc[series.eq(0) & counts.gt(0)] = "OBSERVED_ZERO_REFUEL"
