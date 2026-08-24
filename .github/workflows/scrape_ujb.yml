@@ -56,7 +56,11 @@ jobs:
             echo "Tidak ada perubahan data UJB, skip commit."
           else
             git commit -m "chore: update UJB snapshot and history [skip ci]"
-            git push
+            # Branch dapat maju setelah checkout (mis. ada commit kode baru).
+            # Rebase commit data ke HEAD remote terbaru sebelum push agar tidak
+            # gagal dengan non-fast-forward / fetch-first.
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
       # Validasi hybrid sengaja hanya untuk manual dispatch. Scheduled scraper
@@ -98,6 +102,6 @@ jobs:
             echo "Output validasi tidak berubah."
           else
             git commit -m "chore: update hybrid validation audit [skip ci]"
-            git pull --rebase
-            git push
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
