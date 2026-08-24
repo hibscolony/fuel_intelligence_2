@@ -16,6 +16,15 @@ def test_kend_ops_named_units_keep_full_equipment_id():
     assert parse_ujb_unit("RANGGA 05") == ("KEND_OPS", "RANGGA 05")
     assert parse_ujb_unit("INOVA DM") == ("KEND_OPS", "INOVA DM")
     assert parse_ujb_unit("ENGINEERING") == ("KEND_OPS", "ENGINEERING")
+    assert parse_ujb_unit("TRAGA") == ("KEND_OPS", "TRAGA")
+    assert parse_ujb_unit("AMBULANCE") == ("KEND_OPS", "AMBULANCE")
+    assert parse_ujb_unit("GALMON") == ("KEND_OPS", "GALMON")
+    assert parse_ujb_unit("POLISI") == ("KEND_OPS", "POLISI")
+
+
+def test_confirmed_genset_mapping_is_modul():
+    assert parse_ujb_unit("GENSET") == ("MODUL", "GENSET")
+    assert parse_ujb_unit("GENSET 01") == ("MODUL", "GENSET 01")
 
 
 def test_confirmed_operational_vehicle_plates_are_kend_ops():
@@ -36,11 +45,18 @@ def test_legacy_scrape_categories_are_repaired_on_load():
         "KEND_OPS",
         "ENGINEERING",
     )
+    assert normalize_ujb_category_and_id("TRAGA", "TRAGA") == ("KEND_OPS", "TRAGA")
+    assert normalize_ujb_category_and_id("AMBULANCE", "AMBULANCE") == (
+        "KEND_OPS", "AMBULANCE"
+    )
+    assert normalize_ujb_category_and_id("GALMON", "GALMON") == ("KEND_OPS", "GALMON")
+    assert normalize_ujb_category_and_id("POLISI", "POLISI") == ("KEND_OPS", "POLISI")
+    assert normalize_ujb_category_and_id("GENSET", "GENSET") == ("MODUL", "GENSET")
     assert normalize_ujb_category_and_id("B", "8137 OH") == ("KEND_OPS", "B 8137 OH")
     assert normalize_ujb_category_and_id("AD", "8137 OH") == ("KEND_OPS", "AD 8137 OH")
     assert normalize_ujb_category_and_id("RFK", "26") == ("FORKLIFT", "26")
     assert normalize_ujb_category_and_id("FRK", "26") == ("FORKLIFT", "26")
 
 
-def test_elf_is_not_reclassified_without_confirmation():
+def test_elf_remains_its_own_confirmed_category():
     assert parse_ujb_unit("ELF 03") == ("ELF", "03")
