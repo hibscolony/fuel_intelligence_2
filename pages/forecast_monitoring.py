@@ -283,7 +283,7 @@ if st.session_state.get("show_horizon_leaderboard", False):
                     ui.metric_card(
                         f"Best D+{h}",
                         str(row["model_label"]),
-                        helper=f"WAPE {float(row['wape']):.2f}%",
+                        subtext=f"WAPE {float(row['wape']):.2f}%",
                     )
                 else:
                     ui.metric_card(f"Best D+{h}", "N/A")
