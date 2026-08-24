@@ -1,0 +1,92 @@
+{
+  "strategy": "single_range:2026-08-18 to 2026-08-24:button",
+  "coverage": {
+    "requested_start": "2026-08-18",
+    "requested_end": "2026-08-24",
+    "observed_start": "2026-08-18",
+    "observed_end": "2026-08-24",
+    "observed_days": 7,
+    "requested_days": 7,
+    "reaches_requested_start": true
+  },
+  "before": {
+    "url": "https://dashboard.ujbgroup.com/report/custom_jict",
+    "inputs": [
+      {
+        "meta": "type=search placeholder=Search here. . . class=form-control border-0 shadow-none",
+        "value": "",
+        "visible": false
+      },
+      {
+        "meta": "type=hidden name=report id=report",
+        "value": "<hidden>",
+        "visible": false
+      },
+      {
+        "meta": "type=text id=pc-date_range_picker-4 placeholder=Select date range class=form-control flatpickr-input",
+        "value": "2026-08-22 to 2026-08-24",
+        "visible": true
+      },
+      {
+        "meta": "type=text id=unit placeholder=Select Unit class=form-control",
+        "value": "",
+        "visible": true
+      },
+      {
+        "meta": "type=search",
+        "value": "",
+        "visible": true
+      },
+      {
+        "meta": "type=number aria-label=Year class=numInput cur-year",
+        "value": "2026",
+        "visible": false
+      }
+    ],
+    "buttons": [
+      "Download Report",
+      "Search",
+      "Reset"
+    ]
+  },
+  "after": {
+    "url": "https://dashboard.ujbgroup.com/report/custom_jict",
+    "inputs": [
+      {
+        "meta": "type=search placeholder=Search here. . . class=form-control border-0 shadow-none",
+        "value": "",
+        "visible": false
+      },
+      {
+        "meta": "type=hidden name=report id=report",
+        "value": "<hidden>",
+        "visible": false
+      },
+      {
+        "meta": "type=text id=pc-date_range_picker-4 placeholder=Select date range class=form-control flatpickr-input",
+        "value": "2026-08-18 to 2026-08-24",
+        "visible": true
+      },
+      {
+        "meta": "type=text id=unit placeholder=Select Unit class=form-control",
+        "value": "",
+        "visible": true
+      },
+      {
+        "meta": "type=search",
+        "value": "",
+        "visible": true
+      },
+      {
+        "meta": "type=number aria-label=Year class=numInput cur-year",
+        "value": "2026",
+        "visible": false
+      }
+    ],
+    "buttons": [
+      "Download Report",
+      "Search",
+      "Reset"
+    ]
+  }
+}
