@@ -21,6 +21,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 import config
+from src.ujb_unit_mapping import normalize_ujb_category_and_id
 
 
 class NoUjbDataError(Exception):
@@ -43,6 +44,10 @@ def load_ujb_long_df() -> pd.DataFrame:
     """Baca config.UJB_SCRAPE_PATH, kembalikan DataFrame siap dipakai
     build_cleaned_fuel_data() -- sama seperti ParseResult.long_df dari jalur
     Excel yang lama.
+
+    CSV lama juga dinormalisasi ulang saat dibaca. Ini penting karena file
+    ``ujb_scraped_latest.csv`` bisa saja dibuat sebelum taxonomy UJB diperbaiki
+    (mis. RFK vs FRK, atau plat B 8137 OH yang dulu terbaca sebagai kategori B).
     """
     if not config.UJB_SCRAPE_PATH.exists():
         raise NoUjbDataError(
@@ -67,6 +72,14 @@ def load_ujb_long_df() -> pd.DataFrame:
             f"Kemungkinan skema ujb_dashboard_scraper.py berubah -- cek "
             f"transform_to_dashboard_schema() di sana."
         )
+
+    # Normalisasi taxonomy legacy TANPA perlu menunggu scraper berikutnya.
+    normalized = df.apply(
+        lambda r: normalize_ujb_category_and_id(r["equipment_category"], r["equipment_id"]),
+        axis=1,
+    )
+    df["equipment_category"] = normalized.apply(lambda t: t[0])
+    df["equipment_id"] = normalized.apply(lambda t: t[1])
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     return df[_LONG_DF_COLUMNS].copy()
