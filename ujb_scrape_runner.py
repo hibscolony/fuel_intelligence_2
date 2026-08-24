@@ -1,22 +1,100 @@
 """Production runner for UJB scraping with robust date-filter diagnostics.
 
-This wrapper deliberately reuses the stable login, pagination, transform, and
-history code from ``ujb_dashboard_scraper.py`` while using the newer date-filter
-logic from ``src.ujb_date_filter``. It can be folded back into the main scraper
-once the vendor UI behavior is confirmed.
+This wrapper deliberately reuses the stable pagination, transform, and history
+code from ``ujb_dashboard_scraper.py`` while using resilient navigation and the
+newer date-filter logic from ``src.ujb_date_filter``.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pandas as pd
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 import ujb_dashboard_scraper as base
 from src.ujb_date_filter import apply_date_range_robust, collect_filter_diagnostics
 from src.ujb_history import write_snapshot_and_history
+
+
+def _goto_resilient(page, url: str, label: str, attempts: int = 3) -> None:
+    """Navigate without requiring permanent network-idle state.
+
+    Dashboard/vendor pages can keep analytics/websocket requests alive, making
+    ``wait_until='networkidle'`` flaky on GitHub-hosted runners. A successful
+    DOMContentLoaded is sufficient; network-idle is only a best-effort wait.
+    """
+    last_error: Exception | None = None
+    page.set_default_navigation_timeout(60_000)
+
+    for attempt in range(1, attempts + 1):
+        try:
+            base.logger.info(
+                "Membuka %s (attempt %s/%s): %s", label, attempt, attempts, url
+            )
+            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=8_000)
+            except PlaywrightTimeoutError:
+                base.logger.info(
+                    "%s belum network-idle setelah 8 detik; lanjut karena DOM sudah termuat.",
+                    label,
+                )
+            return
+        except PlaywrightTimeoutError as exc:
+            last_error = exc
+            base.logger.warning(
+                "Timeout membuka %s pada attempt %s/%s: %s",
+                label,
+                attempt,
+                attempts,
+                exc,
+            )
+            if attempt < attempts:
+                page.wait_for_timeout(2_000 * attempt)
+
+    raise RuntimeError(
+        f"Gagal membuka {label} setelah {attempts} percobaan: {url}"
+    ) from last_error
+
+
+def _login_resilient(page, username: str, password: str) -> None:
+    """Login UJB without depending on network-idle as a hard condition."""
+    _goto_resilient(page, base.BASE_URL, "halaman login")
+
+    username_input = page.get_by_label(re.compile("username", re.I)).or_(
+        page.get_by_placeholder(re.compile("username", re.I))
+    ).first
+    password_input = page.get_by_label(re.compile("password", re.I)).or_(
+        page.get_by_placeholder(re.compile("password", re.I))
+    ).first
+
+    username_input.wait_for(state="visible", timeout=30_000)
+    username_input.fill(username)
+    password_input.fill(password)
+
+    page.get_by_role(
+        "button", name=re.compile("log ?in|masuk|sign ?in", re.I)
+    ).first.click()
+
+    # Tunggu perubahan halaman/form login, bukan seluruh jaringan berhenti.
+    try:
+        page.wait_for_url(re.compile(r"^(?!.*login).*$", re.I), timeout=30_000)
+    except PlaywrightTimeoutError:
+        page.wait_for_timeout(2_000)
+
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=15_000)
+    except PlaywrightTimeoutError:
+        pass
+
+    if "login" in page.url.lower():
+        raise RuntimeError(
+            "Masih di halaman login setelah submit -- cek username/password, captcha, atau OTP."
+        )
+    base.logger.info("Login berhasil. URL saat ini: %s", page.url)
 
 
 def _coverage(raw_df: pd.DataFrame, date_from: str, date_to: str) -> dict:
@@ -56,7 +134,11 @@ def _coverage(raw_df: pd.DataFrame, date_from: str, date_to: str) -> dict:
     }
 
 
-def run(date_from: str | None = None, date_to: str | None = None, headless: bool = True) -> tuple[pd.DataFrame, dict]:
+def run(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    headless: bool = True,
+) -> tuple[pd.DataFrame, dict]:
     if not base.USERNAME or not base.PASSWORD:
         raise RuntimeError("UJB_USERNAME / UJB_PASSWORD belum di-set di environment variable.")
 
@@ -71,9 +153,8 @@ def run(date_from: str | None = None, date_to: str | None = None, headless: bool
         browser = p.chromium.launch(headless=headless)
         page = browser.new_page()
         try:
-            base.login(page, base.USERNAME, base.PASSWORD)
-            base.logger.info("Membuka halaman report: %s", base.REPORT_URL)
-            page.goto(base.REPORT_URL, wait_until="networkidle")
+            _login_resilient(page, base.USERNAME, base.PASSWORD)
+            _goto_resilient(page, base.REPORT_URL, "halaman report UJB")
 
             before = collect_filter_diagnostics(page)
             strategy = apply_date_range_robust(page, date_from, date_to)
@@ -116,7 +197,12 @@ def main() -> None:
     print(result_df.head(20))
     print(f"\nTotal baris snapshot: {len(result_df)}")
     print("Date-filter diagnostics:")
-    print(json.dumps({"strategy": diagnostics["strategy"], "coverage": diagnostics["coverage"]}, indent=2))
+    print(
+        json.dumps(
+            {"strategy": diagnostics["strategy"], "coverage": diagnostics["coverage"]},
+            indent=2,
+        )
+    )
 
     output_dir = Path(
         os.environ.get("UJB_OUTPUT_DIR")
