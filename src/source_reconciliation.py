@@ -11,6 +11,10 @@ Until the Excel taxonomy is split safely, UJB forklift events are excluded from
 the *hybrid total* on dates where Excel SUPPORT is present, preventing a hidden
 double count. The UJB events remain available in UJB history for operational
 analysis and are used when Excel SUPPORT is absent.
+
+Unknown/new UJB categories are quarantined from the hybrid total until their
+source relationship is explicitly approved. They remain visible in the source
+audit/history so a new vendor unit type can never inflate totals silently.
 """
 from __future__ import annotations
 
@@ -121,6 +125,12 @@ def reconcile_excel_and_ujb(
     Excel still aggregates Forklift into SUPPORT. Therefore on a date where
     Excel SUPPORT exists, UJB FORKLIFT is *not* added to the hybrid total.
     If Excel SUPPORT is absent, UJB FORKLIFT is retained as fallback.
+
+    New-category guard
+    ------------------
+    UJB categories outside the approved direct set and FORKLIFT are suppressed
+    from the hybrid total until explicitly classified. They remain in history
+    and the audit table for review.
     """
     preferred = {str(c).strip().upper() for c in preferred_categories}
     excel = _annotate_source(excel_df, "EXCEL")
@@ -171,18 +181,20 @@ def reconcile_excel_and_ujb(
         ujb_categories = ujb["equipment_category"].astype(str).str.upper()
         ujb_dates = ujb["date"].dt.normalize()
 
+        direct_mask = ujb_categories.isin(preferred)
         forklift_mask = ujb_categories.eq(FORKLIFT_CATEGORY)
+        approved_mask = direct_mask | forklift_mask
+        unknown_mask = ~approved_mask
+
         forklift_overlaps_excel_support = forklift_mask & ujb_dates.isin(
             excel_support_dates
         )
-        suppress_ujb = forklift_overlaps_excel_support
+        suppress_ujb = forklift_overlaps_excel_support | unknown_mask
 
         reasons = pd.Series(
-            "UJB_ADDITIONAL_CATEGORY", index=ujb.index, dtype="object"
+            "UJB_UNAPPROVED_CATEGORY_SUPPRESSED", index=ujb.index, dtype="object"
         )
-        reasons.loc[ujb_categories.isin(preferred)] = (
-            "UJB_PREFERRED_ON_COVERED_DATE"
-        )
+        reasons.loc[direct_mask] = "UJB_PREFERRED_ON_COVERED_DATE"
         reasons.loc[forklift_mask & ~forklift_overlaps_excel_support] = (
             "UJB_FORKLIFT_FALLBACK_NO_EXCEL_SUPPORT"
         )
