@@ -149,6 +149,28 @@ def recursive_forecast(history: pd.Series, horizon: int, model_name: str) -> pd.
     raise ValueError(f"Model tidak dikenal: {model_name}. Pilihan: {list(config.FORECAST_MODEL_CHOICES)}")
 
 
+def forecast_horizon_totals(history: pd.Series, model_name: str,
+                            horizons: tuple[int, ...] = (7, 30)) -> dict:
+    """Return cumulative totals from a future forecast path.
+
+    Keeping this calculation outside the UI prevents historical actual values
+    from accidentally being labelled as seven- or thirty-day forecasts.
+    """
+    normalized_horizons = tuple(sorted({int(h) for h in horizons}))
+    if not normalized_horizons or normalized_horizons[0] <= 0:
+        raise ValueError("Semua horizon forecast harus berupa integer positif.")
+    if history.empty:
+        raise ValueError("History kosong; forecast horizon tidak dapat dihitung.")
+
+    path = recursive_forecast(history, max(normalized_horizons), model_name).clip(lower=0.0)
+    return {
+        "model_name": model_name,
+        "as_of_date": pd.Timestamp(history.index.max()),
+        "path": path,
+        "totals": {h: float(path.iloc[:h].sum()) for h in normalized_horizons},
+    }
+
+
 def backtest_residual_quantiles(history: pd.Series, model_name: str,
                                  backtest_days: Optional[int] = None) -> np.ndarray:
     """Bangun residual (actual - forecast) dari backtest 1-step-ahead

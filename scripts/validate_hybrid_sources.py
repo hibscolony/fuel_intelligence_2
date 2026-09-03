@@ -31,6 +31,7 @@ from src.ujb_source import load_ujb_long_df
 OUTPUT_DIR = config.PROCESSED_DATA_DIR
 AUDIT_PATH = OUTPUT_DIR / "source_reconciliation_audit.csv"
 SUMMARY_PATH = OUTPUT_DIR / "hybrid_validation_summary.json"
+COVERAGE_PATH = OUTPUT_DIR / "source_coverage_calendar.csv"
 
 
 def _numeric_sum(df: pd.DataFrame, column: str) -> float:
@@ -57,7 +58,7 @@ def _audit_reason_summary(audit: pd.DataFrame) -> list[dict]:
     if audit.empty:
         return []
     grouped = (
-        audit.groupby(["source_system", "selection_reason"], dropna=False)
+        audit.groupby(["source_system", "coverage_status", "selection_reason"], dropna=False)
         .agg(
             input_rows=("input_rows", "sum"),
             selected_rows=("selected_rows", "sum"),
@@ -72,6 +73,7 @@ def _audit_reason_summary(audit: pd.DataFrame) -> list[dict]:
     for row in grouped.to_dict(orient="records"):
         records.append({
             "source_system": str(row["source_system"]),
+            "coverage_status": str(row["coverage_status"]),
             "selection_reason": str(row["selection_reason"]),
             "input_rows": int(row["input_rows"]),
             "selected_rows": int(row["selected_rows"]),
@@ -180,6 +182,10 @@ def main() -> int:
         ].sum()
     )
 
+    non_complete_ujb_selected_rows = int(
+        ujb_selected["ujb_coverage_status"].fillna("UNKNOWN").ne("COMPLETE").sum()
+    ) if "ujb_coverage_status" in ujb_selected.columns else int(len(ujb_selected))
+
     blank_reason_rows = int(
         cleaned["source_selection_reason"].fillna("").astype(str).str.strip().eq("").sum()
     )
@@ -199,6 +205,7 @@ def main() -> int:
         "modul_multi_source_groups": modul_multi_source_groups,
         "duplicate_selected_ujb_event_key_rows": duplicate_event_keys,
         "unapproved_ujb_selected_rows": unapproved_selected_rows,
+        "non_complete_ujb_selected_rows": non_complete_ujb_selected_rows,
         "blank_source_selection_reason_rows": blank_reason_rows,
         "selected_liter_audit_mismatch": bool(selected_liter_diff > 1e-6),
         "forecast_gap_was_imputed": bool(not forecast_coverage["gap_values_are_nan"]),
@@ -215,6 +222,7 @@ def main() -> int:
         violations["modul_multi_source_groups"],
         violations["duplicate_selected_ujb_event_key_rows"],
         violations["unapproved_ujb_selected_rows"],
+        violations["non_complete_ujb_selected_rows"],
         violations["blank_source_selection_reason_rows"],
         violations["selected_liter_audit_mismatch"],
         violations["forecast_gap_was_imputed"],
@@ -239,6 +247,11 @@ def main() -> int:
             "coverage_days": int(len(coverage_dates)),
         },
         "forecast_coverage": forecast_coverage,
+        "source_coverage_status_counts": {
+            str(key): int(value)
+            for key, value in result.source_coverage_calendar["source_coverage_status"]
+            .value_counts().to_dict().items()
+        },
         "violations": violations,
         "duplicate_event_key_examples": duplicate_event_key_examples,
         "source_reason_summary": _audit_reason_summary(audit),
@@ -246,11 +259,13 @@ def main() -> int:
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     audit.to_csv(AUDIT_PATH, index=False)
+    result.source_coverage_calendar.to_csv(COVERAGE_PATH, index=False)
     SUMMARY_PATH.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     print(f"\nAudit written to: {AUDIT_PATH}")
     print(f"Summary written to: {SUMMARY_PATH}")
+    print(f"Coverage calendar written to: {COVERAGE_PATH}")
 
     if not passed:
         print("\nHYBRID VALIDATION FAILED", file=sys.stderr)

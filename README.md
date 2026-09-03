@@ -61,7 +61,7 @@ Semua output tersimpan ke `data/processed/`.
 pytest tests/ -v
 ```
 
-82 test mencakup parsing, cleaning, reconciliation, data quality, forecast
+Lebih dari 160 test mencakup parsing, cleaning, reconciliation, data quality, forecast
 integration, anomaly detection, change-point detection, health score,
 clustering, saving simulator, recommendation engine, dan smoke test tiap
 halaman dashboard (`streamlit.testing.v1.AppTest`).
@@ -82,10 +82,30 @@ Overview, Konsumsi Detail, Fuel Anomaly, Equipment Health, dst) dan khusus
 di section **"Validasi Lintas Tahun"** (yang justru sengaja membandingkan
 forecast dengan data aktual sesudah cutoff, sebagai uji out-of-sample).
 
+Evaluasi model memakai rolling origin untuk D+1, D+3, D+7, D+14, D+30,
+D+60, dan D+90. Origin lama dipisahkan sebagai calibration set untuk
+prediction interval, sedangkan origin yang lebih baru menjadi holdout untuk
+WAPE, MAE, bias, interval coverage, dan pemilihan model per horizon. Model
+baru diberi label pemenang jika memiliki minimal
+`FORECAST_MIN_MODEL_SELECTION_ORIGINS` holdout forecast.
+
+Monitoring drift membandingkan WAPE terkini dengan baseline rolling yang
+tidak bertumpang tindih. Forecast berbasis segmen operasional yang belum
+mencapai 60 hari tetap ditampilkan sebagai baseline, tetapi berstatus
+`LIMITED` dan tidak boleh dipakai sebagai target komitmen.
+
+Sebelum kandidat model dapat dipromosikan, production gate memeriksa umur
+training, panjang segmen operasional terbaru, source coverage gap, jumlah
+holdout forecast, WAPE, dan interval readiness. Evaluasi hanya dapat memberi
+status `ELIGIBLE_FOR_REVIEW`; deployment tetap memerlukan approval manual dan
+tidak pernah dilakukan otomatis oleh dashboard.
+
 ## Mengintegrasikan Model Forecasting Asli
 
-Model forecasting **tidak dibangun ulang** oleh sistem ini. Simpan hasil
-model Anda sebagai `data/processed/forecast_results.csv` dengan skema:
+Model produksi eksternal **tidak dibangun ulang** oleh sistem ini. Model di
+Forecast Explorer adalah kandidat pembanding yang dilatih saat evaluasi,
+bukan pengganti otomatis model produksi. Untuk mengintegrasikan hasil model
+produksi, simpan sebagai `data/processed/forecast_results.csv` dengan skema:
 
 ```
 date, actual_fuel, forecast_fuel, lower_interval, upper_interval, model_name

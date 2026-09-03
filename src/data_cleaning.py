@@ -29,6 +29,7 @@ from src.data_loader import parse_workbook
 from src.reconciliation import build_monthly_reconciliation, build_category_monthly_reconciliation
 from src.source_reconciliation import reconcile_excel_and_ujb
 from src.ujb_source import load_ujb_long_df, NoUjbDataError
+from src.ujb_coverage import load_ujb_coverage_manifest
 
 MONTH_NAMES = {1: "Januari", 2: "Februari", 3: "Maret", 4: "April", 5: "Mei", 6: "Juni",
                7: "Juli", 8: "Agustus", 9: "September", 10: "Oktober", 11: "November", 12: "Desember"}
@@ -74,6 +75,7 @@ class CleaningResult:
     category_monthly_reconciliation: pd.DataFrame
     totalisator_df: pd.DataFrame
     source_reconciliation_audit: pd.DataFrame
+    source_coverage_calendar: pd.DataFrame
 
 
 def _classify_row(row: pd.Series) -> tuple[str, Optional[str]]:
@@ -158,7 +160,7 @@ def build_cleaned_fuel_data(long_df: pd.DataFrame) -> pd.DataFrame:
         "date", "event_time", "year", "month", "equipment_category", "equipment_id",
         "fuel_liter", "status_text", "source_sheet", "source_file", "source_row",
         "source_event_key", "source_system", "source_selection_reason",
-        "data_status", "issue_code",
+        "ujb_coverage_status", "data_status", "issue_code",
     ]
     for c in out_cols:
         if c not in df.columns:
@@ -231,6 +233,7 @@ def run_cleaning_pipeline(path: Optional[Path] = None) -> CleaningResult:
     excel_long_df = pd.DataFrame()
     totalisator_df = pd.DataFrame()
     ujb_long_df = pd.DataFrame()
+    ujb_coverage_calendar = pd.DataFrame()
 
     if config.DATA_SOURCE_MODE in ("hybrid", "excel"):
         try:
@@ -244,6 +247,7 @@ def run_cleaning_pipeline(path: Optional[Path] = None) -> CleaningResult:
     if config.DATA_SOURCE_MODE in ("hybrid", "ujb"):
         try:
             ujb_long_df = load_ujb_long_df()
+            ujb_coverage_calendar = load_ujb_coverage_manifest(config.RAW_DATA_DIR)
         except NoUjbDataError:
             if config.DATA_SOURCE_MODE == "ujb":
                 raise
@@ -251,9 +255,13 @@ def run_cleaning_pipeline(path: Optional[Path] = None) -> CleaningResult:
     if config.DATA_SOURCE_MODE == "excel":
         source_result = reconcile_excel_and_ujb(excel_long_df, pd.DataFrame())
     elif config.DATA_SOURCE_MODE == "ujb":
-        source_result = reconcile_excel_and_ujb(pd.DataFrame(), ujb_long_df)
+        source_result = reconcile_excel_and_ujb(
+            pd.DataFrame(), ujb_long_df, ujb_coverage_calendar=ujb_coverage_calendar
+        )
     else:
-        source_result = reconcile_excel_and_ujb(excel_long_df, ujb_long_df)
+        source_result = reconcile_excel_and_ujb(
+            excel_long_df, ujb_long_df, ujb_coverage_calendar=ujb_coverage_calendar
+        )
 
     combined_long_df = source_result.selected_df
     if combined_long_df.empty:
@@ -275,6 +283,7 @@ def run_cleaning_pipeline(path: Optional[Path] = None) -> CleaningResult:
         category_reconciliation,
         totalisator_df,
         source_result.audit_df,
+        source_result.source_coverage_calendar,
     )
 
 
@@ -289,6 +298,9 @@ def save_outputs(result: CleaningResult, output_dir: Optional[Path] = None) -> N
     )
     result.source_reconciliation_audit.to_csv(
         output_dir / "source_reconciliation_audit.csv", index=False
+    )
+    result.source_coverage_calendar.to_csv(
+        output_dir / "source_coverage_calendar.csv", index=False
     )
 
 

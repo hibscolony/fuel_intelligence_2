@@ -294,7 +294,10 @@ if __name__ == "__main__":
     result = run_cleaning_pipeline()
     anomaly_df = detect_anomalies(result.cleaned_fuel_data)
     change_points = detect_all_change_points(result.cleaned_fuel_data)
-    zero_streaks = detect_zero_consumption_streaks(result.cleaned_fuel_data)
+    zero_streaks = detect_zero_consumption_streaks(
+        result.cleaned_fuel_data,
+        source_coverage_calendar=result.source_coverage_calendar,
+    )
 
     valid = result.cleaned_fuel_data[result.cleaned_fuel_data["data_status"] != "INVALID_DATE"]
     daily_actual = valid.groupby("date")["fuel_liter"].sum(min_count=1).asfreq("D")

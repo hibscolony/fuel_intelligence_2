@@ -54,6 +54,28 @@ def test_zero_consumption_streaks_only_above_threshold(cleaning_result):
         assert (streaks["longest_gap_days"] >= config.ZERO_CONSUMPTION_STREAK_DAYS).all()
 
 
+def test_global_source_gap_does_not_penalize_equipment_streak():
+    cleaned = pd.DataFrame({
+        "date": pd.to_datetime(["2026-01-01", "2026-01-20"]),
+        "equipment_category": ["BUS", "BUS"],
+        "equipment_id": ["01", "01"],
+        "fuel_liter": [20.0, 20.0],
+        "data_status": ["VALID", "VALID"],
+    })
+    source_calendar = pd.DataFrame({
+        "date": pd.date_range("2026-01-01", "2026-01-20", freq="D"),
+        "known_source_coverage": [True] + [False] * 18 + [True],
+    })
+
+    streaks = detect_zero_consumption_streaks(
+        cleaned,
+        min_streak_days=5,
+        source_coverage_calendar=source_calendar,
+    )
+
+    assert streaks.empty
+
+
 def test_category_reconciliation_covers_all_categories(cleaning_result):
     # COMPRESSOR baru muncul di layout tahun 2026 -- pastikan kategori 2025
     # tidak hilang, tapi izinkan kategori baru bertambah

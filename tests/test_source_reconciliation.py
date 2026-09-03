@@ -12,6 +12,13 @@ def _df(rows):
     return pd.DataFrame(rows)
 
 
+def _ujb(rows, coverage_status="COMPLETE"):
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["ujb_coverage_status"] = coverage_status
+    return df
+
+
 def test_ujb_replaces_excel_for_dispenser_categories_on_covered_dates():
     excel = _df([
         {"date": "2026-08-17", "equipment_category": "HEAD_TRUCK", "equipment_id": "101", "fuel_liter": 70.0},
@@ -19,7 +26,7 @@ def test_ujb_replaces_excel_for_dispenser_categories_on_covered_dates():
         {"date": "2026-08-18", "equipment_category": "BUS", "equipment_id": "01", "fuel_liter": 50.0},
         {"date": "2026-08-18", "equipment_category": "RTGC", "equipment_id": "01", "fuel_liter": 500.0},
     ])
-    ujb = _df([
+    ujb = _ujb([
         {"date": "2026-08-18", "equipment_category": "HEAD_TRUCK", "equipment_id": "101", "fuel_liter": 72.0, "source_event_key": "a"},
         {"date": "2026-08-18", "equipment_category": "BUS", "equipment_id": "01", "fuel_liter": 49.0, "source_event_key": "b"},
     ])
@@ -45,7 +52,7 @@ def test_gap_date_is_not_silently_assumed_to_have_ujb_coverage():
     excel = _df([
         {"date": "2026-08-19", "equipment_category": "HEAD_TRUCK", "equipment_id": "101", "fuel_liter": 80.0},
     ])
-    ujb = _df([
+    ujb = _ujb([
         {"date": "2026-08-18", "equipment_category": "HEAD_TRUCK", "equipment_id": "101", "fuel_liter": 70.0},
         {"date": "2026-08-20", "equipment_category": "HEAD_TRUCK", "equipment_id": "101", "fuel_liter": 75.0},
     ])
@@ -61,7 +68,7 @@ def test_gap_date_is_not_silently_assumed_to_have_ujb_coverage():
 
 def test_multiple_ujb_events_same_unit_day_are_preserved():
     excel = _df([])
-    ujb = _df([
+    ujb = _ujb([
         {"date": "2026-08-18", "event_time": "08:00:00", "equipment_category": "HEAD_TRUCK", "equipment_id": "101", "fuel_liter": 50.0, "source_event_key": "evt-1"},
         {"date": "2026-08-18", "event_time": "13:00:00", "equipment_category": "HEAD_TRUCK", "equipment_id": "101", "fuel_liter": 40.0, "source_event_key": "evt-2"},
     ])
@@ -76,7 +83,7 @@ def test_forklift_ujb_is_not_added_when_excel_support_exists_same_day():
         {"date": "2026-08-18", "equipment_category": "SUPPORT", "equipment_id": "17", "fuel_liter": 30.0},
         {"date": "2026-08-18", "equipment_category": "SUPPORT", "equipment_id": "RS-01", "fuel_liter": 90.0},
     ])
-    ujb = _df([
+    ujb = _ujb([
         {"date": "2026-08-18", "equipment_category": "FORKLIFT", "equipment_id": "17", "fuel_liter": 20.0, "source_event_key": "fork-1"},
     ])
 
@@ -96,7 +103,7 @@ def test_forklift_ujb_is_used_when_excel_support_missing():
     excel = _df([
         {"date": "2026-08-18", "equipment_category": "RTGC", "equipment_id": "01", "fuel_liter": 500.0},
     ])
-    ujb = _df([
+    ujb = _ujb([
         {"date": "2026-08-18", "equipment_category": "FORKLIFT", "equipment_id": "17", "fuel_liter": 20.0},
     ])
 
@@ -111,7 +118,7 @@ def test_modul_ujb_is_suppressed_when_excel_modul_exists_same_day():
     excel = _df([
         {"date": "2026-08-20", "equipment_category": "MODUL", "equipment_id": "GENSET", "fuel_liter": 80.0},
     ])
-    ujb = _df([
+    ujb = _ujb([
         {"date": "2026-08-20", "equipment_category": "MODUL", "equipment_id": "GENSET", "fuel_liter": 40.0, "source_event_key": "genset-1"},
     ])
 
@@ -133,7 +140,7 @@ def test_modul_ujb_is_used_when_excel_modul_missing():
     excel = _df([
         {"date": "2026-08-20", "equipment_category": "RTGC", "equipment_id": "01", "fuel_liter": 500.0},
     ])
-    ujb = _df([
+    ujb = _ujb([
         {"date": "2026-08-20", "equipment_category": "MODUL", "equipment_id": "GENSET", "fuel_liter": 40.0, "source_event_key": "genset-1"},
     ])
 
@@ -148,7 +155,7 @@ def test_unapproved_ujb_category_is_quarantined_from_total_but_audited():
     excel = _df([
         {"date": "2026-08-18", "equipment_category": "RTGC", "equipment_id": "01", "fuel_liter": 500.0},
     ])
-    ujb = _df([
+    ujb = _ujb([
         {"date": "2026-08-18", "equipment_category": "NEW_VENDOR_TYPE", "equipment_id": "X1", "fuel_liter": 33.0},
     ])
 
@@ -167,7 +174,7 @@ def test_audit_reports_suppressed_excel_volume():
     excel = _df([
         {"date": "2026-08-18", "equipment_category": "BUS", "equipment_id": "01", "fuel_liter": 50.0},
     ])
-    ujb = _df([
+    ujb = _ujb([
         {"date": "2026-08-18", "equipment_category": "BUS", "equipment_id": "01", "fuel_liter": 49.0},
     ])
 
@@ -178,3 +185,34 @@ def test_audit_reports_suppressed_excel_volume():
     ].iloc[0]
     assert suppressed["suppressed_rows"] == 1
     assert suppressed["suppressed_liter"] == 50.0
+
+
+def test_partial_ujb_date_never_suppresses_excel_or_enters_total():
+    excel = _df([
+        {"date": "2026-08-18", "equipment_category": "HEAD_TRUCK", "equipment_id": "101", "fuel_liter": 75.0},
+        {"date": "2026-08-18", "equipment_category": "BUS", "equipment_id": "01", "fuel_liter": 50.0},
+    ])
+    # Minimal reproduction: only one UJB category arrived on a partial scrape.
+    ujb = _ujb([
+        {"date": "2026-08-18", "equipment_category": "HEAD_TRUCK", "equipment_id": "101", "fuel_liter": 72.0},
+    ], coverage_status="PARTIAL")
+
+    result = reconcile_excel_and_ujb(excel, ujb)
+
+    assert set(result.selected_df["source_system"]) == {"EXCEL"}
+    assert result.selected_df["fuel_liter"].sum() == 125.0
+    suppressed = result.audit_df[
+        result.audit_df["selection_reason"].eq("UJB_PARTIAL_COVERAGE_SUPPRESSED")
+    ]
+    assert suppressed["suppressed_rows"].sum() == 1
+
+
+def test_ujb_without_coverage_proof_defaults_to_unknown_and_is_quarantined():
+    ujb = _df([
+        {"date": "2026-08-18", "equipment_category": "HEAD_TRUCK", "equipment_id": "101", "fuel_liter": 72.0},
+    ])
+
+    result = reconcile_excel_and_ujb(pd.DataFrame(), ujb)
+
+    assert result.selected_df.empty
+    assert result.audit_df["selection_reason"].eq("UJB_UNKNOWN_COVERAGE_SUPPRESSED").any()

@@ -47,12 +47,22 @@ class DataQualityKPIs:
         return pd.DataFrame([self.__dict__])
 
 
-def detect_missing_dates(cleaned: pd.DataFrame) -> pd.DataFrame:
+def detect_missing_dates(cleaned: pd.DataFrame,
+                         source_coverage_calendar: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Hari kalender (dalam rentang tanggal data yang tersedia) tanpa
     transaksi solar SAMA SEKALI (seluruh armada). Bukan berarti data hilang
     -- bisa juga hari libur operasional/administratif; tetap dilaporkan
     sebagai temuan untuk ditinjau.
     """
+    if source_coverage_calendar is not None and not source_coverage_calendar.empty:
+        calendar = source_coverage_calendar.copy()
+        calendar["date"] = pd.to_datetime(calendar["date"], errors="coerce")
+        missing = calendar[
+            calendar["date"].notna()
+            & ~calendar["known_source_coverage"].fillna(False).astype(bool)
+        ]["date"].drop_duplicates().sort_values()
+        return pd.DataFrame({"date": missing, "issue": "SOURCE_COVERAGE_GAP"}).reset_index(drop=True)
+
     valid = cleaned[cleaned["data_status"] != "INVALID_DATE"]
     daily_counts = valid.groupby("date").size()
     if daily_counts.empty:
@@ -63,7 +73,8 @@ def detect_missing_dates(cleaned: pd.DataFrame) -> pd.DataFrame:
 
 
 def detect_zero_consumption_streaks(cleaned: pd.DataFrame,
-                                     min_streak_days: Optional[int] = None) -> pd.DataFrame:
+                                     min_streak_days: Optional[int] = None,
+                                     source_coverage_calendar: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Untuk tiap equipment, cari rentang hari kalender terpanjang TANPA
     transaksi solar (baik numerik maupun status), dihitung dari rentang
     first_seen-last_seen equipment tsb (bukan dari 1 Jan, supaya equipment
@@ -75,6 +86,15 @@ def detect_zero_consumption_streaks(cleaned: pd.DataFrame,
     """
     min_streak_days = min_streak_days or config.ZERO_CONSUMPTION_STREAK_DAYS
     valid = cleaned[cleaned["data_status"] != "INVALID_DATE"]
+    known_source_dates = None
+    if source_coverage_calendar is not None and not source_coverage_calendar.empty:
+        calendar = source_coverage_calendar.copy()
+        calendar["date"] = pd.to_datetime(calendar["date"], errors="coerce").dt.normalize()
+        known_source_dates = pd.DatetimeIndex(
+            calendar.loc[
+                calendar["known_source_coverage"].fillna(False).astype(bool), "date"
+            ].dropna().unique()
+        )
 
     records = []
     for (cat, eq_id), sub in valid.groupby(["equipment_category", "equipment_id"]):
@@ -83,6 +103,8 @@ def detect_zero_consumption_streaks(cleaned: pd.DataFrame,
             continue
         full_range = pd.date_range(dates_with_activity.min(), dates_with_activity.max(), freq="D")
         gaps = full_range.difference(dates_with_activity)
+        if known_source_dates is not None:
+            gaps = gaps.intersection(known_source_dates)
         if len(gaps) == 0:
             continue
         # cari rentang gap konsekutif terpanjang
@@ -107,7 +129,8 @@ def detect_zero_consumption_streaks(cleaned: pd.DataFrame,
 
 
 def compute_dq_kpis(cleaned: pd.DataFrame, monthly_reconciliation: pd.DataFrame,
-                     zero_streaks: Optional[pd.DataFrame] = None) -> DataQualityKPIs:
+                     zero_streaks: Optional[pd.DataFrame] = None,
+                     source_coverage_calendar: Optional[pd.DataFrame] = None) -> DataQualityKPIs:
     """Hitung KPI ringkas kualitas data + status akhir PASS/REVIEW/FAILED.
 
     CATATAN DESAIN (per diskusi proyek): data ini adalah catatan PENGISIAN
@@ -132,7 +155,9 @@ def compute_dq_kpis(cleaned: pd.DataFrame, monthly_reconciliation: pd.DataFrame,
     valid = cleaned[cleaned["data_status"] != "INVALID_DATE"]
     total_equipment = valid.groupby(["equipment_category", "equipment_id"]).ngroups
     if zero_streaks is None:
-        zero_streaks = detect_zero_consumption_streaks(cleaned)
+        zero_streaks = detect_zero_consumption_streaks(
+            cleaned, source_coverage_calendar=source_coverage_calendar
+        )
     n_equipment_with_streak = len(zero_streaks)
     data_completeness_percentage = (
         100.0 * (1 - n_equipment_with_streak / total_equipment) if total_equipment else 0.0
@@ -186,10 +211,16 @@ if __name__ == "__main__":
 
     result = run_cleaning_pipeline()
 
-    kpis = compute_dq_kpis(result.cleaned_fuel_data, result.monthly_reconciliation)
-    missing_dates = detect_missing_dates(result.cleaned_fuel_data)
-    streaks = detect_zero_consumption_streaks(result.cleaned_fuel_data)
-    kpis = compute_dq_kpis(result.cleaned_fuel_data, result.monthly_reconciliation, streaks)
+    missing_dates = detect_missing_dates(
+        result.cleaned_fuel_data, result.source_coverage_calendar
+    )
+    streaks = detect_zero_consumption_streaks(
+        result.cleaned_fuel_data, source_coverage_calendar=result.source_coverage_calendar
+    )
+    kpis = compute_dq_kpis(
+        result.cleaned_fuel_data, result.monthly_reconciliation, streaks,
+        source_coverage_calendar=result.source_coverage_calendar,
+    )
     save_outputs(kpis, missing_dates, streaks)
 
     print("=== KPI Data Quality ===")

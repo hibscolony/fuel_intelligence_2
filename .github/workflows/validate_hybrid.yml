@@ -48,6 +48,7 @@ jobs:
           git config user.email "actions@github.com"
           git add \
             data/processed/source_reconciliation_audit.csv \
+            data/processed/source_coverage_calendar.csv \
             data/processed/hybrid_validation_summary.json 2>/dev/null || true
 
           if git diff --cached --quiet; then

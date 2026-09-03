@@ -292,11 +292,16 @@ def _row_signature(body_rows) -> str:
         return ""
 
 
-def scrape_report_table(page: Page) -> pd.DataFrame:
-    """Baca SEMUA halaman tabel report UJB."""
+def scrape_report_table(page: Page, return_diagnostics: bool = False):
+    """Baca semua halaman tabel dan optionally return pagination evidence."""
     all_rows: list[dict] = []
     headers: Optional[list[str]] = None
     page_num = 1
+    pagination = {
+        "complete": None,
+        "termination_reason": "unknown",
+        "pages_read": 0,
+    }
 
     while True:
         page.wait_for_selector("table tbody tr")
@@ -329,13 +334,17 @@ def scrape_report_table(page: Page) -> pd.DataFrame:
             "Halaman %s: %s baris terkumpul (total: %s).",
             page_num, row_count, len(all_rows),
         )
+        pagination["pages_read"] = page_num
 
         next_btn = _next_control(page)
         if next_btn is None:
             logger.info("Kontrol Next tidak ditemukan -- pagination selesai atau markup tidak dikenal.")
+            pagination["termination_reason"] = "next_control_not_found"
             break
         if _control_is_disabled(next_btn):
             logger.info("Kontrol Next disabled -- sudah halaman terakhir.")
+            pagination["complete"] = True
+            pagination["termination_reason"] = "next_disabled_last_page"
             break
 
         next_btn.click()
@@ -355,11 +364,15 @@ def scrape_report_table(page: Page) -> pd.DataFrame:
                 logger.warning(
                     "Next terlihat aktif tetapi isi tabel tidak berubah; berhenti untuk mencegah loop."
                 )
+                pagination["complete"] = False
+                pagination["termination_reason"] = "content_unchanged_after_next"
                 break
 
         page_num += 1
         if page_num > 200:
             logger.warning("Berhenti paksa di 200 halaman -- cek pagination UJB.")
+            pagination["complete"] = False
+            pagination["termination_reason"] = "page_cap_reached"
             break
 
     result = pd.DataFrame(all_rows)
@@ -367,6 +380,8 @@ def scrape_report_table(page: Page) -> pd.DataFrame:
         logger.warning(
             "Hasil tepat 100 row. Jika report seharusnya lebih banyak, cek log pagination/markup Next."
         )
+    if return_diagnostics:
+        return result, pagination
     return result
 
 

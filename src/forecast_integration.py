@@ -188,20 +188,51 @@ def compute_rolling_performance(df_with_errors: pd.DataFrame,
     return result
 
 
-def detect_model_drift_warning(rolling_perf: pd.DataFrame, window_days: int = 30) -> Optional[str]:
-    """Bandingkan status HEALTHY/MONITOR/RETRAIN rolling window terbaru vs
-    beberapa titik sebelumnya -- beri peringatan kalau tren memburuk.
-    """
+def summarize_model_drift(rolling_perf: pd.DataFrame, window_days: int = 30) -> dict:
+    """Compare the latest window with an earlier, non-overlapping baseline."""
     sub = rolling_perf[rolling_perf["window_days"] == window_days].sort_values("date")
-    if len(sub) < 2:
+    result = {
+        "window_days": int(window_days),
+        "status": "INSUFFICIENT_DATA",
+        "current_wape": np.nan,
+        "baseline_wape": np.nan,
+        "deterioration_ratio": np.nan,
+        "drift_detected": False,
+    }
+    # Excluding the last full window avoids comparing two almost-identical
+    # rolling values that differ by only one day.
+    if len(sub) <= window_days:
+        return result
+    latest = float(sub["rolling_wape"].iloc[-1])
+    baseline_pool = sub.iloc[:-window_days]["rolling_wape"].dropna().tail(window_days)
+    if pd.isna(latest) or baseline_pool.empty:
+        return result
+    baseline = float(baseline_pool.median())
+    ratio = latest / baseline if baseline > 0 else np.inf
+    drift = bool(
+        ratio >= config.FORECAST_DRIFT_DETERIORATION_RATIO
+        and latest > config.FORECAST_WAPE_HEALTHY_MAX
+    )
+    result.update({
+        "status": "DRIFT" if drift else "STABLE",
+        "current_wape": latest,
+        "baseline_wape": baseline,
+        "deterioration_ratio": ratio,
+        "drift_detected": drift,
+    })
+    return result
+
+
+def detect_model_drift_warning(rolling_perf: pd.DataFrame, window_days: int = 30) -> Optional[str]:
+    """Return a warning when a non-overlapping rolling baseline deteriorates."""
+    drift = summarize_model_drift(rolling_perf, window_days=window_days)
+    if not drift["drift_detected"]:
         return None
-    latest, previous = sub["rolling_wape"].iloc[-1], sub["rolling_wape"].iloc[-2]
-    if pd.isna(latest) or pd.isna(previous):
-        return None
-    if latest > previous * 1.2 and latest > config.FORECAST_WAPE_HEALTHY_MAX:
-        return (f"WAPE rolling {window_days} hari memburuk dari {previous:.1f}% "
-                f"menjadi {latest:.1f}% -- pertimbangkan retraining.")
-    return None
+    return (
+        f"WAPE rolling {window_days} hari memburuk dari baseline non-overlap "
+        f"{drift['baseline_wape']:.1f}% menjadi {drift['current_wape']:.1f}% "
+        f"({drift['deterioration_ratio']:.2f}x) -- pertimbangkan retraining."
+    )
 
 
 def save_outputs(summary: ForecastMonitoringSummary, rolling_perf: pd.DataFrame,

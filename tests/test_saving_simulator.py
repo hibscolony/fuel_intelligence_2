@@ -57,11 +57,34 @@ def test_calculate_l_per_teu_with_actual_teu_computes_value():
     assert "warning" not in result
 
 
+def test_calculate_l_per_teu_honors_custom_target_inputs():
+    result = calculate_l_per_teu(
+        1_000_000,
+        total_teu=400_000,
+        target_liter_per_teu=2.40,
+        target_throughput_teu=500_000,
+    )
+    assert result["target_l_per_teu"] == pytest.approx(2.40)
+    assert result["target_throughput_teu"] == pytest.approx(500_000)
+    assert result["max_liter_allowed_for_target"] == pytest.approx(1_200_000)
+    assert result["meets_target"] is False
+
+
 def test_required_monthly_reduction_is_target_over_twelve():
     inputs = SavingSimulatorInputs(baseline_total_liter=1_200_000, saving_target_percentage=10.0)
     df = run_saving_scenarios(inputs)
     expected = inputs.saving_target_liter / 12
     assert (df["required_monthly_reduction"] == round(expected, 1)).all()
+
+
+def test_required_daily_reduction_uses_selected_period_length():
+    inputs = SavingSimulatorInputs(
+        baseline_total_liter=200_000,
+        saving_target_percentage=10.0,
+        planning_days=200,
+    )
+    df = run_saving_scenarios(inputs)
+    assert (df["required_daily_reduction"] == 100.0).all()
 
 
 def test_build_saving_report_has_expected_keys():

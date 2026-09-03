@@ -10,6 +10,7 @@ from src.forecast_evaluation import (
     choose_calibration_horizon,
     apply_horizon_prediction_interval,
     rank_model_horizon_summaries,
+    build_independent_interval_evaluation,
     validate_daily_history,
 )
 
@@ -120,3 +121,59 @@ def test_model_ranking_is_separate_for_each_horizon_and_prefers_complete_evaluat
     assert winners.loc[30, "model_name"] == "B"
     incomplete_c = ranked[(ranked["horizon_days"] == 30) & (ranked["model_name"] == "C")].iloc[0]
     assert bool(incomplete_c["evaluation_complete"]) is False
+
+
+def test_model_ranking_does_not_declare_winner_with_too_few_holdout_forecasts():
+    summary = pd.DataFrame([
+        {"model_name": "A", "horizon_days": 30, "n_forecasts": 3, "mae": 10.0, "rmse": 12.0, "wape": 5.0, "bias": 1.0},
+        {"model_name": "B", "horizon_days": 30, "n_forecasts": 3, "mae": 12.0, "rmse": 14.0, "wape": 6.0, "bias": 2.0},
+    ])
+
+    ranked = rank_model_horizon_summaries(summary, min_forecasts=5)
+
+    assert not ranked["best_for_horizon"].any()
+    assert ranked.iloc[0]["provisional_best_for_horizon"]
+    assert not ranked["selection_ready"].any()
+
+
+def test_interval_calibration_and_evaluation_origins_do_not_overlap():
+    s = _daily_series(260)
+    bt = build_multi_horizon_backtest(
+        s, "seasonal_naive_7", horizons=(1, 7, 30),
+        evaluation_days=140, origin_step_days=10, min_train_days=60,
+    )
+
+    result = build_independent_interval_evaluation(
+        bt, calibration_fraction=0.6,
+        min_calibration_origins=3, min_evaluation_origins=2,
+    )
+
+    calibration_origins = set(result["calibration_df"]["origin_date"])
+    evaluation_origins = set(result["evaluation_df"]["origin_date"])
+    assert calibration_origins
+    assert evaluation_origins
+    assert calibration_origins.isdisjoint(evaluation_origins)
+    assert max(calibration_origins) < min(evaluation_origins)
+    assert result["interval_calibration_independent"] is True
+
+
+def test_holdout_interval_summary_reports_readiness_and_coverage():
+    s = _daily_series(260)
+    bt = build_multi_horizon_backtest(
+        s, "moving_average_7", horizons=(1, 7, 30),
+        evaluation_days=140, origin_step_days=10, min_train_days=60,
+    )
+
+    result = build_independent_interval_evaluation(
+        bt, calibration_fraction=0.6,
+        min_calibration_origins=3, min_evaluation_origins=2,
+    )
+    summary = result["interval_summary"]
+
+    assert summary["horizon_days"].tolist() == [1, 7, 30]
+    assert set(summary["readiness_status"]) <= {"READY", "LIMITED"}
+    expected_ready = summary["coverage_gap_pct"].le(20.0)
+    assert summary["readiness_status"].eq("READY").equals(expected_ready)
+    assert summary["interval_coverage_pct"].between(0, 100).all()
+    assert (summary["mean_interval_width"] >= 0).all()
+    assert (result["evaluation_df"]["lower_interval"] >= 0).all()

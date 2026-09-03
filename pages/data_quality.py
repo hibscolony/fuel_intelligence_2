@@ -17,7 +17,7 @@ from src import ui
 ui.inject_global_css()
 
 ui.page_header(
-    title="Data Quality",
+    title="Kualitas Data",
     description="Audit otomatis kelengkapan, konsistensi, dan asal sumber data pengisian solar.",
     context="Termasuk rekonsiliasi workbook historis dan precedence Excel ↔ UJB untuk mencegah double counting.",
 )
@@ -26,9 +26,10 @@ cleaning = get_cleaning_result()
 dq = get_data_quality()
 kpis = dq["kpis"]
 source_audit = cleaning.get("source_reconciliation_audit", pd.DataFrame())
+source_calendar = cleaning.get("source_coverage_calendar", pd.DataFrame())
 
 # Overall status badge
-status_map = {"PASS": "success", "REVIEW": "warning", "FAIL": "danger"}
+status_map = {"PASS": "success", "REVIEW": "warning", "FAILED": "danger"}
 status_sev = status_map.get(kpis.overall_status, "info")
 badge_html = ui.status_badge(kpis.overall_status, status_sev)
 st.markdown(
@@ -38,7 +39,7 @@ st.markdown(
 )
 
 # ── Quality Metrics ───────────────────────────────────────────────────────
-ui.section_header("Quality Metrics")
+ui.section_header("Metrik Kualitas")
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     ui.metric_card("Data Completeness", format_percentage(kpis.data_completeness_percentage))
@@ -81,8 +82,54 @@ with c8:
 
 st.markdown("<br><br>", unsafe_allow_html=True)
 
+# ── Source Coverage Calendar ──────────────────────────────────────────────
+ui.section_header("Kalender Cakupan Sumber")
+st.caption(
+    "UJB hanya authoritative pada tanggal berstatus COMPLETE. PARTIAL, FAILED, dan UNKNOWN "
+    "tetap diaudit tetapi tidak boleh menggantikan Excel atau masuk ke total hybrid."
+)
+
+if source_calendar.empty:
+    st.warning("Kalender coverage sumber belum tersedia.", icon="⚠️")
+else:
+    calendar = source_calendar.copy()
+    calendar["date"] = pd.to_datetime(calendar["date"], errors="coerce")
+    status_counts = calendar["source_coverage_status"].value_counts()
+    known_pct = calendar["known_source_coverage"].fillna(False).mean() * 100
+    cv1, cv2, cv3, cv4 = st.columns(4)
+    with cv1:
+        ui.metric_card("Known Coverage", format_percentage(known_pct), "Excel atau UJB COMPLETE", "info")
+    with cv2:
+        ui.metric_card("UJB Complete", format_number(status_counts.get("UJB_COMPLETE", 0)), "Hari authoritative", "success")
+    with cv3:
+        incomplete_days = int(status_counts.get("UJB_PARTIAL", 0) + status_counts.get("UJB_FAILED", 0))
+        ui.metric_card("UJB Incomplete", format_number(incomplete_days), "Tidak masuk total", "danger" if incomplete_days else "success")
+    with cv4:
+        source_gap_days = int(status_counts.get("SOURCE_GAP", 0))
+        ui.metric_card("Source Gap", format_number(source_gap_days), "Dipisahkan dari gap equipment", "warning" if source_gap_days else "success")
+
+    unsafe_ujb = calendar[calendar["ujb_coverage_status"].isin(["PARTIAL", "FAILED", "UNKNOWN"])]
+    unsafe_ujb = unsafe_ujb[unsafe_ujb["ujb_manifest_present"]]
+    if not unsafe_ujb.empty:
+        st.error(
+            f"Ada {len(unsafe_ujb)} tanggal UJB non-authoritative. Transaksi pada tanggal tersebut "
+            "dikarantina dari total hybrid.",
+            icon="🛑",
+        )
+
+    with st.expander("Detail kalender coverage sumber", expanded=False):
+        st.dataframe(calendar.tail(90), width="stretch", hide_index=True)
+        st.download_button(
+            "Download Source Coverage Calendar (CSV)",
+            calendar.to_csv(index=False),
+            "source_coverage_calendar.csv",
+            "text/csv",
+        )
+
+st.markdown("<br><br>", unsafe_allow_html=True)
+
 # ── Source Reconciliation Audit ───────────────────────────────────────────
-ui.section_header("Source Reconciliation Audit — Excel ↔ UJB")
+ui.section_header("Audit Rekonsiliasi Sumber — Excel ↔ UJB")
 st.caption(
     "Menunjukkan sumber mana yang benar-benar masuk ke total hybrid. "
     "Baris/liter yang disuppress tetap tercatat di audit, tetapi tidak ikut dijumlahkan."
@@ -104,7 +151,9 @@ else:
     ujb_suppressed = _source_sum("UJB", "suppressed_liter")
 
     ujb_days = audit.loc[
-        audit["source_system"].eq("UJB") & audit["input_rows"].gt(0), "date"
+        audit["source_system"].eq("UJB")
+        & audit["coverage_status"].eq("COMPLETE")
+        & audit["input_rows"].gt(0), "date"
     ].dropna().dt.normalize().drop_duplicates().sort_values()
     coverage_label = "-"
     if not ujb_days.empty:
@@ -123,11 +172,11 @@ else:
     with s4:
         ui.metric_card(
             "UJB Disuppress", format_liter(ujb_suppressed),
-            "Forklift bridge / kategori belum approved", "warning" if ujb_suppressed > 0 else "success",
+            "Coverage tidak lengkap / bridge / taxonomy", "warning" if ujb_suppressed > 0 else "success",
         )
 
     reason_summary = (
-        audit.groupby(["source_system", "selection_reason"], dropna=False)
+        audit.groupby(["source_system", "coverage_status", "selection_reason"], dropna=False)
         .agg(
             input_rows=("input_rows", "sum"),
             selected_rows=("selected_rows", "sum"),
@@ -164,7 +213,7 @@ else:
     )
     fig_source = ui.format_chart(fig_source)
     fig_source.update_layout(height=330, legend_title="")
-    st.plotly_chart(fig_source, use_container_width=True)
+    st.plotly_chart(fig_source, width='stretch')
 
     unapproved = reason_summary[
         reason_summary["selection_reason"].eq("UJB_UNAPPROVED_CATEGORY_SUPPRESSED")
@@ -177,8 +226,23 @@ else:
             icon="⚠️",
         )
 
+    incomplete = reason_summary[
+        reason_summary["selection_reason"].isin([
+            "UJB_PARTIAL_COVERAGE_SUPPRESSED",
+            "UJB_FAILED_COVERAGE_SUPPRESSED",
+            "UJB_UNKNOWN_COVERAGE_SUPPRESSED",
+        ])
+        & reason_summary["suppressed_rows"].gt(0)
+    ]
+    if not incomplete.empty:
+        st.error(
+            "Ada transaksi UJB dari run yang coverage-nya tidak terbukti lengkap. Transaksi tersebut "
+            "sengaja tidak dimasukkan ke total hybrid.",
+            icon="🛑",
+        )
+
     with st.expander("Detail keputusan source precedence", expanded=False):
-        st.dataframe(reason_summary, use_container_width=True, hide_index=True)
+        st.dataframe(reason_summary, width="stretch", hide_index=True)
         st.download_button(
             "Download Source Reconciliation Audit (CSV)",
             source_audit.to_csv(index=False),
@@ -204,10 +268,10 @@ fig = px.bar(
 )
 fig = ui.format_chart(fig)
 fig.update_layout(height=360, legend_title="")
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width='stretch')
 
 with st.expander("Tabel Detail Rekonsiliasi Bulanan"):
-    st.dataframe(monthly, use_container_width=True, hide_index=True)
+    st.dataframe(monthly, width="stretch", hide_index=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -220,7 +284,7 @@ st.dataframe(
             "MINOR DIFFERENCE": 2, "MATCH": 3, "NO_WORKBOOK_VALUE": 4,
         }),
     ),
-    use_container_width=True, hide_index=True,
+    width="stretch", hide_index=True,
 )
 
 st.markdown("<br><br>", unsafe_allow_html=True)
@@ -229,18 +293,23 @@ st.markdown("<br><br>", unsafe_allow_html=True)
 col1, col2 = st.columns(2)
 with col1:
     ui.section_header("Ringkasan Isu Data")
-    st.dataframe(cleaning["data_quality_report"], use_container_width=True, hide_index=True)
+    st.dataframe(cleaning["data_quality_report"], width="stretch", hide_index=True)
 
 with col2:
-    ui.section_header("Zero-Consumption Streak")
-    st.caption("Equipment dengan jeda pengisian panjang di tengah masa aktifnya.")
+    ui.section_header("Jeda Pengisian Panjang")
+    st.caption("Equipment dengan jeda pengisian panjang; hari source gap sudah dikeluarkan dari perhitungan.")
     st.dataframe(
         dq["zero_streaks"][[
             "equipment_category", "equipment_id",
             "longest_gap_days", "longest_gap_start", "longest_gap_end",
         ]].head(20),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
+
+if not dq["missing_dates"].empty:
+    with st.expander("Source Coverage Gap", expanded=False):
+        st.caption("Hari ini tidak dihitung sebagai zero-consumption equipment karena sumbernya tidak diketahui.")
+        st.dataframe(dq["missing_dates"], width="stretch", hide_index=True)
 
 st.download_button(
     "Download Data Quality Report (CSV)",

@@ -18,7 +18,7 @@ from src import ui
 ui.inject_global_css()
 
 ui.page_header(
-    title="Equipment Health",
+    title="Kesehatan Alat",
     description="Fuel Consumption Health Score (0–100) sebagai alat bantu prioritasi pemeriksaan.",
     context="Bukan diagnosis kerusakan mesin.",
 )
@@ -52,19 +52,19 @@ with col1:
     ))
     fig = ui.format_chart(fig)
     fig.update_layout(height=280)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 with col2:
-    ui.section_header("Health Score per Kategori")
+    ui.section_header("Skor Kesehatan per Kategori")
     fig2 = px.box(scored, x="equipment_category", y="health_score", color="equipment_category")
     fig2 = ui.format_chart(fig2)
     fig2.update_layout(height=280, showlegend=False)
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, width='stretch')
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Filter & Table ────────────────────────────────────────────────────────
-ui.section_header("Cari & Filter Equipment")
+ui.section_header("Cari dan Filter Alat")
 with st.expander("Filter Data", expanded=True):
     fc1, fc2, fc3 = st.columns(3)
     categories = fc1.multiselect("Kategori", sorted(health_scores["equipment_category"].unique()))
@@ -82,13 +82,13 @@ st.dataframe(
         "average_daily_fuel", "anomaly_count", "critical_anomaly_count",
         "trend_percentage", "data_completeness", "recommended_action",
     ]].sort_values("health_score"),
-    use_container_width=True, hide_index=True,
+    width="stretch", hide_index=True,
 )
 
 st.markdown("<br><br>", unsafe_allow_html=True)
 
 # ── Radar Chart ───────────────────────────────────────────────────────────
-ui.section_header("Breakdown Komponen Penalti")
+ui.section_header("Rincian Faktor Penilaian")
 st.caption("Pilih satu equipment — makin besar area grafik = makin banyak penalti.")
 
 eq_choice   = st.selectbox("Pilih Equipment", sorted(scored["equipment_id"].unique()), label_visibility="collapsed")
@@ -113,7 +113,7 @@ fig3.update_layout(
     plot_bgcolor="rgba(0,0,0,0)",
     paper_bgcolor="rgba(0,0,0,0)",
 )
-st.plotly_chart(fig3, use_container_width=True)
+st.plotly_chart(fig3, width='stretch')
 
 st.info(
     f"**Health score {eq_choice}:** {row['health_score']:.1f} ({row['health_status']})  \n"

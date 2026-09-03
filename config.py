@@ -111,13 +111,20 @@ def get_raw_data_fingerprint() -> str:
             # condition saat file sedang di-overwrite) -- lewati, bukan crash.
             continue
 
-    # Ikutkan juga file hasil scrape UJB (kalau ada) -- supaya auto-refresh
-    # di app.py bereaksi juga saat ujb_dashboard_scraper.py baru selesai jalan,
-    # bukan cuma saat file Excel manual berubah.
-    if UJB_SCRAPE_PATH.exists():
+    # Ikutkan seluruh state UJB yang memengaruhi selection/coverage supaya
+    # perubahan history atau manifest juga membatalkan cache dashboard.
+    ujb_state_paths = [
+        UJB_SCRAPE_PATH,
+        RAW_DATA_DIR / "ujb_history.csv",
+        RAW_DATA_DIR / "ujb_coverage_manifest.csv",
+        RAW_DATA_DIR / "ujb_filter_diagnostics.json",
+    ]
+    for ujb_path in ujb_state_paths:
+        if not ujb_path.exists():
+            continue
         try:
-            stat = UJB_SCRAPE_PATH.stat()
-            parts.append(f"{UJB_SCRAPE_PATH.name}:{stat.st_mtime_ns}:{stat.st_size}")
+            stat = ujb_path.stat()
+            parts.append(f"{ujb_path.name}:{stat.st_mtime_ns}:{stat.st_size}")
         except FileNotFoundError:
             pass
 
@@ -232,6 +239,16 @@ FORECAST_MODEL_CHOICES = {
 FORECAST_RELIABLE_HORIZON_DAYS = 180
 FORECAST_CLIMATOLOGY_WINDOW_DAYS = 7   # +/- hari di sekitar hari-dalam-tahun yang sama, utk rata-rata klimatologi
 FORECAST_BACKTEST_DAYS = 60            # jumlah hari terakhir dipakai utk membangun residual quantile interval
+FORECAST_CALIBRATION_FRACTION = 0.60   # origin awal untuk kalibrasi interval; sisanya holdout evaluasi
+FORECAST_INTERVAL_LOWER_Q = 0.10       # empirical 80% prediction interval
+FORECAST_INTERVAL_UPPER_Q = 0.90
+FORECAST_MIN_CALIBRATION_ORIGINS = 5
+FORECAST_MIN_EVALUATION_ORIGINS = 3
+FORECAST_MIN_MODEL_SELECTION_ORIGINS = 5
+FORECAST_MAX_INTERVAL_COVERAGE_GAP_PCT = 20.0
+FORECAST_DRIFT_DETERIORATION_RATIO = 1.20
+FORECAST_PRODUCTION_MAX_STALENESS_DAYS = 30
+FORECAST_PRODUCTION_MIN_LATEST_SEGMENT_DAYS = 60
 
 # Data yang dipakai utk MELATIH/menghitung forecast (Forecast Explorer & backtest
 # perbandingan model) dibatasi HANYA sampai tanggal ini -- data sesudahnya (mis.

@@ -5,7 +5,7 @@ Entry point JICT Fuel Intelligence Dashboard. Jalankan dengan:
 
     streamlit run app.py
 
-Navigasi 7 halaman didefinisikan eksplisit lewat st.navigation/st.Page
+Navigasi 8 halaman didefinisikan eksplisit lewat st.navigation/st.Page
 (bukan auto-discovery folder pages/) supaya urutan & label tab terkontrol
 penuh terlepas dari nama file atau versi Streamlit yang dipakai.
 """
@@ -21,6 +21,7 @@ if str(BASE_DIR) not in sys.path:
 
 import config
 from src import ui
+from src.persistent_cache import invalidate_all
 
 st.set_page_config(
     page_title="JICT Fuel Intelligence",
@@ -56,14 +57,6 @@ with st.sidebar:
     </div>
     """)
 
-    # st.navigation renders the nav links automatically — just add group labels
-    st.html('<span class="jict-nav-group">Overview</span>')
-    # (navigation items will be injected by st.navigation below)
-
-    st.html("""
-    <div style="height: 100px;"></div>
-    """)
-
     st.divider()
 
     # Bottom controls
@@ -77,7 +70,8 @@ with st.sidebar:
         key="auto_refresh_enabled",
         help="Cek otomatis tiap 20 detik apakah file laporan solar di data/raw/ berubah.",
     )
-    if st.button("⟳  Refresh Data", use_container_width=True):
+    if st.button("⟳  Refresh Data", width="stretch"):
+        invalidate_all()
         st.cache_data.clear()
         st.session_state.raw_data_fingerprint = config.get_raw_data_fingerprint()
         st.session_state.last_refreshed_at = datetime.now()
@@ -103,21 +97,20 @@ def _watch_raw_data_changes():
 _watch_raw_data_changes()
 
 pages = {
-    "OVERVIEW": [
-        st.Page("pages/executive_overview.py", title="Executive Overview", icon="📊", default=True),
+    "OPERASIONAL": [
+        st.Page("pages/executive_overview.py", title="Kontrol Harian", icon="🏠", default=True),
+        st.Page("pages/data_update.py", title="Pembaruan Data", icon="📤"),
+        st.Page("pages/consumption_explorer.py", title="Konsumsi Solar", icon="⛽"),
+        st.Page("pages/anomaly_monitoring.py", title="Alert Anomali", icon="🚨"),
+        st.Page("pages/equipment_health.py", title="Kesehatan Alat", icon="🩺"),
     ],
-    "ANALYTICS": [
-        st.Page("pages/consumption_explorer.py", title="Konsumsi Detail", icon="🔍"),
-        st.Page("pages/forecast_monitoring.py",  title="Forecast Monitoring", icon="📈"),
-        st.Page("pages/anomaly_monitoring.py",   title="Fuel Anomaly", icon="⚠️"),
-        st.Page("pages/equipment_health.py",     title="Equipment Health", icon="🩺"),
+    "PERENCANAAN": [
+        st.Page("pages/saving_simulator.py", title="Perencanaan BBM", icon="💰"),
+        st.Page("pages/recommendations.py", title="Tindak Lanjut", icon="✅"),
     ],
-    "GOVERNANCE": [
-        st.Page("pages/data_quality.py", title="Data Quality", icon="🔎"),
-    ],
-    "DECISION SUPPORT": [
-        st.Page("pages/saving_simulator.py", title="Saving Simulator", icon="💰"),
-        st.Page("pages/recommendations.py", title="Recommendations", icon="✅"),
+    "DATA & MODEL": [
+        st.Page("pages/data_quality.py", title="Kualitas Data", icon="🔎"),
+        st.Page("pages/forecast_monitoring.py", title="Model Lab", icon="🧪"),
     ],
 }
 

@@ -18,7 +18,7 @@ from src import ui
 ui.inject_global_css()
 
 ui.page_header(
-    title="Fuel Anomaly",
+    title="Alert Anomali",
     description="Pantau penyimpangan pola konsumsi historis unit.",
     context="Indikasi untuk pemeriksaan, bukan bukti pasti kerusakan.",
 )
@@ -53,7 +53,7 @@ if isinstance(date_range, tuple) and len(date_range) == 2:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── KPI Summary ───────────────────────────────────────────────────────────
-ui.section_header("Anomaly Summary")
+ui.section_header("Ringkasan Anomali")
 c1, c2, c3, c4 = st.columns(4)
 with c1: ui.metric_card("Detected",          format_number(len(filtered)))
 with c2: ui.metric_card("Critical Severity", format_number((filtered["severity"] == "CRITICAL").sum()), "", "danger")
@@ -71,7 +71,7 @@ sev_colors = {
 }
 
 with col1:
-    ui.section_header("Time Series dengan Titik Anomali")
+    ui.section_header("Tren Waktu dan Titik Anomali")
     if equipment and len(equipment) == 1:
         eq_data = scored[scored["equipment_id"] == equipment[0]].sort_values("date")
         fig = go.Figure()
@@ -90,7 +90,7 @@ with col1:
         ))
         fig = ui.format_chart(fig)
         fig.update_layout(height=380)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info("Pilih **tepat satu** equipment di filter Equipment ID untuk melihat grafik time series.")
 
@@ -104,7 +104,7 @@ with col2:
     fig2 = ui.format_chart(fig2)
     fig2.update_traces(marker_color="#1E4D7A")
     fig2.update_layout(height=380, showlegend=False)
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, width='stretch')
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -118,7 +118,7 @@ if not filtered.empty:
     fig3.add_hline(y=0, line_color="#94A3B8", line_dash="dash")
     fig3 = ui.format_chart(fig3)
     fig3.update_layout(height=360)
-    st.plotly_chart(fig3, use_container_width=True)
+    st.plotly_chart(fig3, width='stretch')
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -128,7 +128,7 @@ st.dataframe(
         "date", "equipment_category", "equipment_id", "fuel_liter", "expected_fuel",
         "deviation_percentage", "severity", "anomaly_type", "anomaly_reason",
     ]].sort_values("date", ascending=False),
-    use_container_width=True, hide_index=True,
+    width="stretch", hide_index=True,
 )
 
 st.download_button(

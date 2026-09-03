@@ -13,3 +13,8 @@ env/
 
 .DS_Store
 Thumbs.db
+
+# Reproducible local analytics cache (invalidated by raw-data fingerprint)
+data/cache/
+data/archive/
+data/audit/

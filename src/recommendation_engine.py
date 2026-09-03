@@ -253,7 +253,10 @@ if __name__ == "__main__":
     result = run_cleaning_pipeline()
     anomaly_df = detect_anomalies(result.cleaned_fuel_data)
     change_points = detect_all_change_points(result.cleaned_fuel_data)
-    zero_streaks = detect_zero_consumption_streaks(result.cleaned_fuel_data)
+    zero_streaks = detect_zero_consumption_streaks(
+        result.cleaned_fuel_data,
+        source_coverage_calendar=result.source_coverage_calendar,
+    )
     health_scores = build_health_score_table(
         result.cleaned_fuel_data, anomaly_df, change_points, zero_streaks,
         result.category_monthly_reconciliation, forecast_summary=None)

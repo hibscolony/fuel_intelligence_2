@@ -44,6 +44,7 @@ class SourceReconciliationResult:
     selected_df: pd.DataFrame
     audit_df: pd.DataFrame
     ujb_coverage_dates: tuple[pd.Timestamp, ...]
+    source_coverage_calendar: pd.DataFrame
 
 
 def _annotate_source(df: pd.DataFrame, source_system: str) -> pd.DataFrame:
@@ -52,6 +53,15 @@ def _annotate_source(df: pd.DataFrame, source_system: str) -> pd.DataFrame:
         out["date"] = pd.NaT
     out["date"] = pd.to_datetime(out["date"], errors="coerce")
     out["source_system"] = source_system
+    if source_system == "UJB":
+        if "ujb_coverage_status" not in out.columns:
+            out["ujb_coverage_status"] = "UNKNOWN"
+        status = out["ujb_coverage_status"].fillna("UNKNOWN").astype(str).str.upper()
+        out["ujb_coverage_status"] = status.where(
+            status.isin(["COMPLETE", "PARTIAL", "FAILED", "UNKNOWN"]), "UNKNOWN"
+        )
+    else:
+        out["ujb_coverage_status"] = "NOT_APPLICABLE"
     if "source_selection_reason" not in out.columns:
         out["source_selection_reason"] = ""
     return out
@@ -60,13 +70,68 @@ def _annotate_source(df: pd.DataFrame, source_system: str) -> pd.DataFrame:
 def _coverage_dates(ujb_df: pd.DataFrame) -> tuple[pd.Timestamp, ...]:
     if ujb_df.empty or "date" not in ujb_df.columns:
         return tuple()
-    dates = pd.to_datetime(ujb_df["date"], errors="coerce").dropna().dt.normalize()
+    complete = ujb_df.get(
+        "coverage_status",
+        ujb_df.get("ujb_coverage_status", pd.Series("UNKNOWN", index=ujb_df.index)),
+    ).fillna("UNKNOWN").astype(str).str.upper().eq("COMPLETE")
+    dates = pd.to_datetime(ujb_df.loc[complete, "date"], errors="coerce").dropna().dt.normalize()
     return tuple(sorted(pd.Timestamp(d) for d in dates.unique()))
+
+
+def _build_source_coverage_calendar(
+    excel: pd.DataFrame,
+    ujb: pd.DataFrame,
+    ujb_coverage_calendar: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Combine Excel source rows and UJB run evidence into a daily calendar."""
+    if ujb_coverage_calendar is not None and not ujb_coverage_calendar.empty:
+        coverage = ujb_coverage_calendar.copy()
+        coverage["date"] = pd.to_datetime(coverage["date"], errors="coerce").dt.normalize()
+        if "coverage_status" not in coverage.columns:
+            coverage["coverage_status"] = "UNKNOWN"
+        coverage = coverage.dropna(subset=["date"]).drop_duplicates("date", keep="last")
+    elif not ujb.empty:
+        coverage = ujb[["date", "ujb_coverage_status"]].copy().rename(
+            columns={"ujb_coverage_status": "coverage_status"}
+        ).drop_duplicates("date", keep="last")
+    else:
+        coverage = pd.DataFrame(columns=["date", "coverage_status"])
+
+    coverage["coverage_status"] = coverage.get(
+        "coverage_status", pd.Series(dtype="object")
+    ).fillna("UNKNOWN").astype(str).str.upper()
+    excel_dates = set(pd.to_datetime(excel.get("date"), errors="coerce").dropna().dt.normalize()) \
+        if not excel.empty else set()
+    ujb_status_by_date = dict(zip(coverage.get("date", []), coverage.get("coverage_status", [])))
+    all_dates = sorted(excel_dates | set(ujb_status_by_date))
+    if not all_dates:
+        return pd.DataFrame(columns=[
+            "date", "excel_has_source_rows", "ujb_manifest_present", "ujb_coverage_status",
+            "known_source_coverage", "source_coverage_status",
+        ])
+
+    index = pd.date_range(min(all_dates), max(all_dates), freq="D")
+    result = pd.DataFrame({"date": index})
+    result["excel_has_source_rows"] = result["date"].isin(excel_dates)
+    result["ujb_manifest_present"] = result["date"].isin(ujb_status_by_date)
+    result["ujb_coverage_status"] = result["date"].map(ujb_status_by_date).fillna("UNKNOWN")
+    result["known_source_coverage"] = (
+        result["excel_has_source_rows"] | result["ujb_coverage_status"].eq("COMPLETE")
+    )
+    result["source_coverage_status"] = "SOURCE_GAP"
+    result.loc[result["ujb_coverage_status"].isin(["PARTIAL", "FAILED"]), "source_coverage_status"] = (
+        "UJB_" + result.loc[
+            result["ujb_coverage_status"].isin(["PARTIAL", "FAILED"]), "ujb_coverage_status"
+        ]
+    )
+    result.loc[result["ujb_coverage_status"].eq("COMPLETE"), "source_coverage_status"] = "UJB_COMPLETE"
+    result.loc[result["excel_has_source_rows"], "source_coverage_status"] = "EXCEL_COVERED"
+    return result
 
 
 def _build_audit(input_frames: list[pd.DataFrame]) -> pd.DataFrame:
     columns = [
-        "date", "equipment_category", "source_system", "selection_reason",
+        "date", "equipment_category", "source_system", "coverage_status", "selection_reason",
         "input_rows", "selected_rows", "suppressed_rows",
         "input_liter", "selected_liter", "suppressed_liter",
     ]
@@ -87,10 +152,13 @@ def _build_audit(input_frames: list[pd.DataFrame]) -> pd.DataFrame:
     audit_input["date"] = pd.to_datetime(
         audit_input["date"], errors="coerce"
     ).dt.normalize()
+    audit_input["coverage_status"] = audit_input.get(
+        "ujb_coverage_status", pd.Series("NOT_APPLICABLE", index=audit_input.index)
+    ).fillna("UNKNOWN")
 
     audit = (
         audit_input.groupby(
-            ["date", "equipment_category", "source_system", "_reason"],
+            ["date", "equipment_category", "source_system", "coverage_status", "_reason"],
             dropna=False,
         )
         .agg(
@@ -105,7 +173,7 @@ def _build_audit(input_frames: list[pd.DataFrame]) -> pd.DataFrame:
     audit["suppressed_rows"] = audit["input_rows"] - audit["selected_rows"]
     audit["suppressed_liter"] = audit["input_liter"] - audit["selected_liter"]
     return audit[columns].sort_values(
-        ["date", "equipment_category", "source_system", "selection_reason"],
+        ["date", "equipment_category", "source_system", "coverage_status", "selection_reason"],
         na_position="last",
     ).reset_index(drop=True)
 
@@ -114,6 +182,7 @@ def reconcile_excel_and_ujb(
     excel_df: pd.DataFrame,
     ujb_df: pd.DataFrame,
     preferred_categories: Iterable[str] = UJB_PREFERRED_CATEGORIES,
+    ujb_coverage_calendar: pd.DataFrame | None = None,
 ) -> SourceReconciliationResult:
     """Select one authoritative source without double counting.
 
@@ -146,7 +215,14 @@ def reconcile_excel_and_ujb(
     preferred = {str(c).strip().upper() for c in preferred_categories}
     excel = _annotate_source(excel_df, "EXCEL")
     ujb = _annotate_source(ujb_df, "UJB")
-    coverage = _coverage_dates(ujb)
+    source_coverage_calendar = _build_source_coverage_calendar(
+        excel, ujb, ujb_coverage_calendar
+    )
+    if not ujb.empty and not source_coverage_calendar.empty:
+        status_by_date = source_coverage_calendar.set_index("date")["ujb_coverage_status"]
+        mapped_status = ujb["date"].dt.normalize().map(status_by_date)
+        ujb["ujb_coverage_status"] = mapped_status.fillna(ujb["ujb_coverage_status"])
+    coverage = _coverage_dates(source_coverage_calendar)
     coverage_set = set(coverage)
 
     excel_categories = (
@@ -178,6 +254,14 @@ def reconcile_excel_and_ujb(
         reasons.loc[is_direct_ujb_category & ~is_covered_date] = (
             "EXCEL_OUTSIDE_UJB_COVERAGE"
         )
+        if not source_coverage_calendar.empty:
+            status_by_date = source_coverage_calendar.set_index("date")["ujb_coverage_status"]
+            manifest_by_date = source_coverage_calendar.set_index("date")["ujb_manifest_present"]
+            excel_ujb_status = excel_dates.map(status_by_date).fillna("UNKNOWN")
+            manifest_present = excel_dates.map(manifest_by_date).fillna(False).astype(bool)
+            for status in ("PARTIAL", "FAILED", "UNKNOWN"):
+                mask = is_direct_ujb_category & manifest_present & excel_ujb_status.eq(status)
+                reasons.loc[mask] = f"EXCEL_RETAINED_UJB_{status}_COVERAGE"
         reasons.loc[suppress_excel] = "EXCEL_SUPPRESSED_UJB_PRECEDENCE"
         reasons.loc[excel_categories.eq(EXCEL_SUPPORT_CATEGORY)] = (
             "EXCEL_SUPPORT_RETAINED_FORKLIFT_BRIDGE"
@@ -197,6 +281,7 @@ def reconcile_excel_and_ujb(
     if not ujb.empty:
         ujb_categories = ujb["equipment_category"].astype(str).str.upper()
         ujb_dates = ujb["date"].dt.normalize()
+        complete_coverage = ujb["ujb_coverage_status"].eq("COMPLETE")
 
         direct_mask = ujb_categories.isin(preferred)
         forklift_mask = ujb_categories.eq(FORKLIFT_CATEGORY)
@@ -212,6 +297,7 @@ def reconcile_excel_and_ujb(
             forklift_overlaps_excel_support
             | modul_overlaps_excel
             | unknown_mask
+            | ~complete_coverage
         )
 
         reasons = pd.Series(
@@ -230,6 +316,10 @@ def reconcile_excel_and_ujb(
         reasons.loc[modul_overlaps_excel] = (
             "UJB_MODUL_SUPPRESSED_EXCEL_MODUL_PRESENT"
         )
+        for status in ("PARTIAL", "FAILED", "UNKNOWN"):
+            reasons.loc[ujb["ujb_coverage_status"].eq(status)] = (
+                f"UJB_{status}_COVERAGE_SUPPRESSED"
+            )
 
         ujb["source_selection_reason"] = reasons
         selected_frames.append(ujb.loc[~suppress_ujb].copy())
@@ -257,4 +347,5 @@ def reconcile_excel_and_ujb(
         selected_df=selected,
         audit_df=audit,
         ujb_coverage_dates=coverage,
+        source_coverage_calendar=source_coverage_calendar,
     )

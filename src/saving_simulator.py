@@ -37,23 +37,30 @@ class SavingSimulatorInputs:
     current_liter_per_teu: float = config.DEFAULT_CURRENT_L_PER_TEU
     target_liter_per_teu: float = config.DEFAULT_TARGET_L_PER_TEU
     actual_teu: Optional[float] = None                  # throughput AKTUAL, jika ada -- lihat calculate_l_per_teu
+    planning_days: int = 365                            # panjang periode baseline/simulasi
 
     def __post_init__(self):
+        if self.baseline_total_liter < 0:
+            raise ValueError("baseline_total_liter tidak boleh negatif.")
+        if self.planning_days <= 0:
+            raise ValueError("planning_days harus lebih besar dari nol.")
         if self.forecast_total_liter is None:
             self.forecast_total_liter = self.baseline_total_liter
         if self.saving_target_liter is None:
             self.saving_target_liter = self.baseline_total_liter * self.saving_target_percentage / 100
 
 
-def calculate_l_per_teu(total_fuel_liter: float, total_teu: Optional[float] = None) -> dict:
+def calculate_l_per_teu(total_fuel_liter: float, total_teu: Optional[float] = None,
+                        target_liter_per_teu: float = config.DEFAULT_TARGET_L_PER_TEU,
+                        target_throughput_teu: float = config.DEFAULT_TARGET_THROUGHPUT_TEU) -> dict:
     """Hitung efisiensi L/TEU dan proyeksi terhadap target -- TIDAK menghitung
     L/TEU aktual kecuali `total_teu` (throughput AKTUAL) diberikan.
     """
-    max_liter_for_target = config.DEFAULT_TARGET_L_PER_TEU * config.DEFAULT_TARGET_THROUGHPUT_TEU
+    max_liter_for_target = target_liter_per_teu * target_throughput_teu
     result = {
         "baseline_l_per_teu": config.DEFAULT_CURRENT_L_PER_TEU,
-        "target_l_per_teu": config.DEFAULT_TARGET_L_PER_TEU,
-        "target_throughput_teu": config.DEFAULT_TARGET_THROUGHPUT_TEU,
+        "target_l_per_teu": target_liter_per_teu,
+        "target_throughput_teu": target_throughput_teu,
         "max_liter_allowed_for_target": max_liter_for_target,
     }
     if total_teu is None or total_teu <= 0:
@@ -69,7 +76,7 @@ def calculate_l_per_teu(total_fuel_liter: float, total_teu: Optional[float] = No
         "savings_needed_liter": savings_needed_liter,
         "reduction_percentage_needed": (savings_needed_liter / total_fuel_liter * 100
                                          if total_fuel_liter else 0.0),
-        "meets_target": actual_l_per_teu <= config.DEFAULT_TARGET_L_PER_TEU,
+        "meets_target": actual_l_per_teu <= target_liter_per_teu,
     })
     return result
 
@@ -120,17 +127,22 @@ def run_saving_scenarios(inputs: SavingSimulatorInputs,
     ]
     df = pd.DataFrame(scenarios)
 
-    # required_monthly/daily_reduction: konstan lintas skenario -- ini besaran yang
-    # dibutuhkan supaya TARGET (bukan skenario tertentu) tercapai dalam waktu 1 tahun.
-    df["required_monthly_reduction"] = round(inputs.saving_target_liter / 12, 1)
-    df["required_daily_reduction"] = round(inputs.saving_target_liter / 365, 2)
+    # Besaran target mengikuti panjang periode baseline yang dipilih.
+    planning_months = inputs.planning_days / 365 * 12
+    df["required_monthly_reduction"] = round(inputs.saving_target_liter / planning_months, 1)
+    df["required_daily_reduction"] = round(inputs.saving_target_liter / inputs.planning_days, 2)
     return df
 
 
 def build_saving_report(inputs: SavingSimulatorInputs) -> dict:
     """Ringkasan lengkap: skenario + info L/TEU (dgn peringatan jika TEU aktual absen)."""
     scenarios_df = run_saving_scenarios(inputs)
-    l_per_teu_info = calculate_l_per_teu(inputs.baseline_total_liter, inputs.actual_teu)
+    l_per_teu_info = calculate_l_per_teu(
+        inputs.baseline_total_liter,
+        inputs.actual_teu,
+        target_liter_per_teu=inputs.target_liter_per_teu,
+        target_throughput_teu=inputs.target_throughput_teu,
+    )
     return {
         "inputs": inputs.__dict__,
         "scenarios": scenarios_df,

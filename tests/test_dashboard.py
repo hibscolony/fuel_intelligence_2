@@ -17,6 +17,7 @@ from streamlit.testing.v1 import AppTest
 
 PAGES = [
     "pages/executive_overview.py",
+    "pages/data_update.py",
     "pages/consumption_explorer.py",
     "pages/forecast_monitoring.py",
     "pages/anomaly_monitoring.py",
@@ -42,6 +43,26 @@ def test_app_entry_point_runs_without_exception():
         at = AppTest.from_file(str(PROJECT_ROOT / "app.py"), default_timeout=180)
         at.run()
     assert not at.exception
+
+
+@pytest.mark.parametrize("page_path", [
+    "pages/executive_overview.py",
+    "pages/saving_simulator.py",
+])
+def test_reporting_year_selector_recomputes_period_values(page_path):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        at = AppTest.from_file(str(PROJECT_ROOT / page_path), default_timeout=180)
+        at.run()
+        assert not at.exception
+        values_before = [m.value for m in at.markdown if "jict-metric-value" in m.value]
+
+        assert at.selectbox[0].value == 2025
+        at.selectbox[0].select(2026).run()
+        assert not at.exception
+        values_after = [m.value for m in at.markdown if "jict-metric-value" in m.value]
+
+    assert values_before != values_after
 
 
 def test_forecast_explorer_button_triggers_prediction_without_exception():

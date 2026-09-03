@@ -8,9 +8,9 @@ Setiap origin memakai data yang tersedia SAMPAI origin tersebut, lalu model
 memprediksi beberapa horizon sekaligus. Hasil diringkas terpisah per horizon.
 
 Residual rolling-origin juga dipakai sebagai dasar prediction interval yang
-horizon-aware. Kalibrasi saat ini masih berasal dari sampel backtest yang sama
-dengan evaluasi performa, jadi interval harus dilabeli sebagai empirical
-backtest calibration -- belum independent calibration set.
+horizon-aware. Origin awal dipakai untuk kalibrasi dan origin yang lebih baru
+menjadi holdout evaluasi, sehingga coverage interval tidak dinilai pada
+residual yang sama dengan yang membentuk interval.
 """
 from __future__ import annotations
 
@@ -187,6 +187,99 @@ def residual_quantiles_by_horizon(backtest_df: pd.DataFrame,
     return out.sort_values("horizon_days").reset_index(drop=True)
 
 
+def build_independent_interval_evaluation(
+    backtest_df: pd.DataFrame,
+    calibration_fraction: float = 0.6,
+    lower_q: float = 0.1,
+    upper_q: float = 0.9,
+    min_calibration_origins: int = 5,
+    min_evaluation_origins: int = 3,
+    max_coverage_gap_pct: float = 20.0,
+) -> dict:
+    """Calibrate intervals on earlier origins and score them on later holdout origins.
+
+    The split is chronological and shared by every horizon, preventing future
+    residuals from leaking into interval calibration. The returned evaluation
+    rows can also be used for honest model selection.
+    """
+    required = {
+        "origin_date", "horizon_days", "actual_fuel", "forecast_fuel",
+        "residual", "status",
+    }
+    missing = required.difference(backtest_df.columns)
+    if missing:
+        raise ValueError(f"Kolom backtest tidak lengkap: {sorted(missing)}")
+    if not 0 < float(calibration_fraction) < 1:
+        raise ValueError("calibration_fraction harus berada di antara 0 dan 1.")
+    if min_calibration_origins < 1 or min_evaluation_origins < 1:
+        raise ValueError("Minimum origin kalibrasi/evaluasi harus positif.")
+
+    ok = backtest_df[backtest_df["status"].eq("OK")].copy()
+    ok["origin_date"] = pd.to_datetime(ok["origin_date"], errors="coerce")
+    ok = ok.dropna(subset=["origin_date"]).sort_values(["origin_date", "horizon_days"])
+    origins = pd.Index(ok["origin_date"].drop_duplicates().sort_values())
+    if len(origins) < 2:
+        raise ValueError("Butuh minimal dua rolling origin untuk kalibrasi dan holdout.")
+
+    split_pos = int(np.floor(len(origins) * float(calibration_fraction)))
+    split_pos = min(max(split_pos, 1), len(origins) - 1)
+    calibration_origins = set(origins[:split_pos])
+    calibration = ok[ok["origin_date"].isin(calibration_origins)].copy()
+    evaluation = ok[~ok["origin_date"].isin(calibration_origins)].copy()
+
+    quantiles = residual_quantiles_by_horizon(calibration, lower_q=lower_q, upper_q=upper_q)
+    q_columns = ["horizon_days", "lower_residual", "upper_residual", "n_residuals"]
+    scored = evaluation.merge(quantiles[q_columns], on="horizon_days", how="left")
+    scored["lower_interval"] = (scored["forecast_fuel"] + scored["lower_residual"]).clip(lower=0.0)
+    scored["upper_interval"] = (scored["forecast_fuel"] + scored["upper_residual"]).clip(lower=0.0)
+    scored["within_interval"] = (
+        scored["actual_fuel"].ge(scored["lower_interval"])
+        & scored["actual_fuel"].le(scored["upper_interval"])
+    )
+    scored["interval_width"] = scored["upper_interval"] - scored["lower_interval"]
+
+    point_summary = summarize_multi_horizon_backtest(scored)
+    interval_rows = []
+    expected_coverage = float(upper_q - lower_q) * 100
+    for horizon, sub in scored.groupby("horizon_days", sort=True):
+        q_row = quantiles[quantiles["horizon_days"].eq(int(horizon))]
+        n_calibration = 0 if q_row.empty else int(q_row.iloc[0]["n_residuals"])
+        n_evaluation = int(len(sub))
+        ready = (
+            n_calibration >= int(min_calibration_origins)
+            and n_evaluation >= int(min_evaluation_origins)
+            and sub["lower_interval"].notna().all()
+            and sub["upper_interval"].notna().all()
+        )
+        coverage = float(sub["within_interval"].mean() * 100) if n_evaluation else np.nan
+        coverage_gap = abs(coverage - expected_coverage) if pd.notna(coverage) else np.nan
+        ready = bool(ready and pd.notna(coverage_gap) and coverage_gap <= float(max_coverage_gap_pct))
+        interval_rows.append({
+            "horizon_days": int(horizon),
+            "n_calibration": n_calibration,
+            "n_evaluation": n_evaluation,
+            "interval_coverage_pct": coverage,
+            "expected_coverage_pct": expected_coverage,
+            "coverage_gap_pct": coverage_gap,
+            "mean_interval_width": float(sub["interval_width"].mean()),
+            "readiness_status": "READY" if ready else "LIMITED",
+        })
+
+    interval_summary = pd.DataFrame(interval_rows)
+    return {
+        "calibration_df": calibration.reset_index(drop=True),
+        "evaluation_df": scored.reset_index(drop=True),
+        "residual_quantiles": quantiles,
+        "point_summary": point_summary,
+        "interval_summary": interval_summary,
+        "calibration_start": pd.Timestamp(origins[0]),
+        "calibration_end": pd.Timestamp(origins[split_pos - 1]),
+        "evaluation_start": pd.Timestamp(origins[split_pos]),
+        "evaluation_end": pd.Timestamp(origins[-1]),
+        "interval_calibration_independent": True,
+    }
+
+
 def choose_calibration_horizon(target_horizon: int, available_horizons: Iterable[int]) -> int:
     """Pilih horizon kalibrasi konservatif: horizon terkecil >= target."""
     target_horizon = int(target_horizon)
@@ -249,7 +342,10 @@ def apply_horizon_prediction_interval(
     }
 
 
-def rank_model_horizon_summaries(summary_df: pd.DataFrame) -> pd.DataFrame:
+def rank_model_horizon_summaries(
+    summary_df: pd.DataFrame,
+    min_forecasts: int = 5,
+) -> pd.DataFrame:
     """Rank model secara TERPISAH untuk setiap horizon.
 
     Ranking: evaluasi lengkap lebih dulu, lalu WAPE, MAE, |bias|, RMSE.
@@ -271,12 +367,20 @@ def rank_model_horizon_summaries(summary_df: pd.DataFrame) -> pd.DataFrame:
 
     max_n = out.groupby("horizon_days")["n_forecasts"].transform("max")
     out["evaluation_complete"] = out["n_forecasts"].eq(max_n)
+    if "interval_readiness_status" in out.columns:
+        out["interval_ready"] = out["interval_readiness_status"].eq("READY")
+    else:
+        out["interval_ready"] = True
+    out["selection_ready"] = (
+        out["n_forecasts"].ge(int(min_forecasts)) & out["interval_ready"]
+    )
     out["abs_bias"] = out["bias"].abs()
     out = out.sort_values(
-        ["horizon_days", "evaluation_complete", "wape", "mae", "abs_bias", "rmse", "model_name"],
-        ascending=[True, False, True, True, True, True, True],
+        ["horizon_days", "selection_ready", "evaluation_complete", "wape", "mae", "abs_bias", "rmse", "model_name"],
+        ascending=[True, False, False, True, True, True, True, True],
         na_position="last",
     ).reset_index(drop=True)
     out["rank"] = out.groupby("horizon_days").cumcount() + 1
-    out["best_for_horizon"] = out["rank"].eq(1)
+    out["provisional_best_for_horizon"] = out["rank"].eq(1)
+    out["best_for_horizon"] = out["rank"].eq(1) & out["selection_ready"]
     return out

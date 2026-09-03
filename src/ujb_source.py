@@ -19,6 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 import config
 from src.ujb_unit_mapping import normalize_ujb_category_and_id
+from src.ujb_coverage import load_ujb_coverage_manifest
 
 
 class NoUjbDataError(Exception):
@@ -29,7 +30,7 @@ _REQUIRED_COLUMNS = [
     "date", "year", "month", "equipment_category", "equipment_id",
     "fuel_liter", "status_text", "source_sheet", "source_file", "source_row",
 ]
-_OPTIONAL_PROVENANCE_COLUMNS = ["event_time", "source_event_key"]
+_OPTIONAL_PROVENANCE_COLUMNS = ["event_time", "source_event_key", "ujb_coverage_status"]
 
 
 def _candidate_paths() -> list[Path]:
@@ -87,6 +88,15 @@ def load_ujb_long_df() -> pd.DataFrame:
     df["equipment_category"] = normalized.apply(lambda t: t[0])
     df["equipment_id"] = normalized.apply(lambda t: t[1])
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    coverage = load_ujb_coverage_manifest(config.RAW_DATA_DIR)
+    if coverage.empty:
+        df["ujb_coverage_status"] = "UNKNOWN"
+    else:
+        status_by_date = coverage.set_index("date")["coverage_status"]
+        df["ujb_coverage_status"] = (
+            df["date"].dt.normalize().map(status_by_date).fillna("UNKNOWN")
+        )
 
     if "source_event_key" in df.columns:
         key = df["source_event_key"].astype("string")

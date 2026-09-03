@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 
@@ -10,20 +11,33 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import config
-from src.analytics import get_saving_scenarios
+from src.analytics import get_cleaning_result, get_saving_scenarios
 from src.formatting import format_liter, format_rupiah, format_percentage
+from src.reporting import available_reporting_years, default_reporting_year, select_reporting_period
 from src import ui
 
 ui.inject_global_css()
 
 ui.page_header(
-    title="Saving Simulator",
+    title="Perencanaan BBM",
     description="Proyeksi anggaran dan simulasi skenario penghematan solar JICT.",
     context="Semua nilai default di bawah adalah parameter awal — dapat disesuaikan.",
 )
 
+cleaning = get_cleaning_result()
+cleaned = cleaning["cleaned_fuel_data"]
+reporting_years = available_reporting_years(cleaned)
+default_year = default_reporting_year(cleaned)
+
 # ── Input Parameter ───────────────────────────────────────────────────────
 with st.expander("Parameter Simulasi", expanded=True):
+    reporting_year = st.selectbox(
+        "Periode baseline",
+        options=reporting_years,
+        index=reporting_years.index(default_year),
+        format_func=lambda year: select_reporting_period(cleaned, year).label,
+        help="Target saving diterapkan hanya pada total dan jumlah hari dalam periode ini.",
+    )
     ui.section_header("Variabel Utama")
     c1, c2, c3 = st.columns(3)
     fuel_price = c1.number_input(
@@ -56,9 +70,19 @@ report     = get_saving_scenarios(
     saving_target_percentage=saving_target_pct,
     target_throughput_teu=target_throughput,
     actual_teu=actual_teu,
+    target_liter_per_teu=target_l_per_teu,
+    reporting_year=reporting_year,
 )
 scenarios    = report["scenarios"]
 l_per_teu_info = report["l_per_teu_info"]
+reporting_period = report["reporting_period"]
+
+if not reporting_period.is_complete_year:
+    st.warning(
+        f"Baseline yang dipilih adalah periode parsial **{reporting_period.label}**. "
+        "Target persen dan kebutuhan harian dihitung untuk periode parsial tersebut, bukan disamarkan sebagai target setahun penuh.",
+        icon="⚠️",
+    )
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -66,9 +90,9 @@ st.markdown("<br>", unsafe_allow_html=True)
 c1, c2 = st.columns(2)
 with c1:
     ui.metric_card(
-        "Baseline 2025 (Ref)",
+        f"Baseline {reporting_period.label}",
         format_liter(report["baseline_total"]),
-        "Total konsumsi berdasarkan data historis yang divalidasi.",
+        f"{reporting_period.n_calendar_days} hari kalender dalam periode terpilih.",
         "info",
     )
 with c2:
@@ -81,7 +105,7 @@ with c2:
         )
     else:
         status_type = "success" if l_per_teu_info["meets_target"] else "danger"
-        status_text = "Memenuhi Target" if l_per_teu_info["meets_target"] else "Di Bawah Target"
+        status_text = "Memenuhi Target" if l_per_teu_info["meets_target"] else "Melebihi Target L/TEU"
         ui.metric_card(
             "Efisiensi L/TEU Aktual",
             f"{l_per_teu_info['actual_l_per_teu']:.3f} L/TEU",
@@ -90,8 +114,8 @@ with c2:
         )
 
 st.caption(
-    f"Baseline 2026: {config.DEFAULT_CURRENT_L_PER_TEU} L/TEU | "
-    f"Target 2027: {config.DEFAULT_TARGET_L_PER_TEU} L/TEU"
+    f"Periode baseline: {reporting_period.start_date:%d %b %Y}–{reporting_period.end_date:%d %b %Y} | "
+    f"Target input: {l_per_teu_info['target_l_per_teu']:.2f} L/TEU"
 )
 
 st.markdown("<br>", unsafe_allow_html=True)
@@ -106,8 +130,11 @@ for col, (_, row) in zip(cols, scenarios.iterrows()):
         ui.metric_card("Proyeksi Biaya",    format_rupiah(row["projected_cost"]))
         ui.metric_card("Total Penghematan", format_liter(row["saving_liter"]))
         pct    = row["target_achievement_percentage"]
-        status = "success" if pct >= 100 else "warning" if pct >= 50 else "danger"
-        ui.metric_card("Pencapaian Target", format_percentage(pct), "", status)
+        if pd.isna(pct):
+            ui.metric_card("Pencapaian Target", "N/A", "Target saving 0%", "neutral")
+        else:
+            status = "success" if pct >= 100 else "warning" if pct >= 50 else "danger"
+            ui.metric_card("Pencapaian Target", format_percentage(pct), "", status)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -118,17 +145,17 @@ with col1:
         scenarios, x="scenario", y="projected_consumption", color="scenario",
         labels={"projected_consumption": "Liter", "scenario": ""},
         color_discrete_map={
-            "Baseline (0% Saving)":      "#BFDDF8",
-            "Target (Sesuai Input)":     "#3977C8",
-            "Optimis (Model Forecast)":  "#22A06B",
+            "Business as Usual": "#BFDDF8",
+            "Moderate Saving": "#3977C8",
+            "Target Saving": "#22A06B",
         },
     )
     fig = ui.format_chart(fig)
     fig.update_layout(height=340, showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 with col2:
-    st.dataframe(scenarios, use_container_width=True, hide_index=True)
+    st.dataframe(scenarios, width="stretch", hide_index=True)
 
 st.download_button(
     "Download Scenario Results (CSV)",

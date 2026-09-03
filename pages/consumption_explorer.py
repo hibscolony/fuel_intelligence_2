@@ -22,7 +22,7 @@ from src import ui
 ui.inject_global_css()
 
 ui.page_header(
-    title="Konsumsi Detail",
+    title="Konsumsi Solar",
     description="Telusuri pemakaian solar: total, per jenis alat, atau per unit -- bulanan maupun harian.",
 )
 
@@ -110,11 +110,11 @@ if granularity == "Bulanan":
     
     fig = ui.format_chart(fig)
     fig.update_layout(height=420)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     table = agg.drop(columns=["date"]).rename(columns={"period_label": "Bulan", "fuel_liter": "Total Liter"})
     table["Total Liter"] = table["Total Liter"].round(0)
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    st.dataframe(table, width="stretch", hide_index=True)
     download_df = table
 
 else:  # Harian
@@ -136,12 +136,12 @@ else:  # Harian
     
     fig = ui.format_chart(fig)
     fig.update_layout(height=420)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     table = filtered.groupby("date")["fuel_liter"].sum().reset_index().rename(
         columns={"date": "Tanggal", "fuel_liter": "Total Liter"})
     table["Total Liter"] = table["Total Liter"].round(1)
-    st.dataframe(table.sort_values("Tanggal", ascending=False), use_container_width=True, hide_index=True)
+    st.dataframe(table.sort_values("Tanggal", ascending=False), width="stretch", hide_index=True)
     download_df = table
 
 st.download_button(
@@ -222,11 +222,11 @@ else:
                         annotation_text=f"Rata-rata: {mean_val:,.0f} L")
     fig_units = ui.format_chart(fig_units)
     fig_units.update_layout(height=420, xaxis_title="")
-    st.plotly_chart(fig_units, use_container_width=True)
+    st.plotly_chart(fig_units, width='stretch')
     
     st.caption(f"Kategori **{compare_category}** -- {len(all_units_in_category)} unit -- periode: {period_caption}. "
                f"'Menyimpang' = di luar ±2 standar deviasi dari rata-rata.")
 
     # Dataframe with styled statuses if possible, but st.dataframe is simple
     st.dataframe(per_unit.rename(columns={"equipment_id": "Unit", "fuel_liter": "Total Liter (L)",
-                                          "status": "Status"}), use_container_width=True, hide_index=True)
+                                          "status": "Status"}), width="stretch", hide_index=True)

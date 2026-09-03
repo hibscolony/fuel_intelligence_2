@@ -4,6 +4,8 @@ src/ui.py
 JICT Fuel Intelligence — Central Design System
 Supports Light Blue Enterprise Analytics & Sleek Dark Navy Mode
 """
+from html import escape
+
 import streamlit as st
 
 # =============================================================================
@@ -24,8 +26,8 @@ _COLORS_LIGHT = {
     "card":          "#FFFFFF",
     "border":        "#DCE8F5",
     "text_primary":  "#18324B",
-    "text_secondary":"#71869B",
-    "text_muted":    "#94A3B8",
+    "text_secondary":"#475C73",
+    "text_muted":    "#6C8299",
     "success":       "#22A06B",
     "success_bg":    "#E6F6EF",
     "success_border":"#A8DFCA",
@@ -84,6 +86,15 @@ def get_colors() -> dict:
 def inject_global_css():
     """Inject the complete JICT design system CSS dynamically based on theme."""
     _c = get_colors()
+    _is_dark = st.session_state.get("dark_mode", False)
+    # Streamlit renders dataframe cells on a canvas, so ordinary text/background
+    # selectors cannot theme the grid. Apply the dark transform only while the
+    # application dark-mode toggle is active.
+    _dataframe_canvas_css = """
+    [data-testid="stDataFrame"] canvas {
+        filter: invert(0.90) hue-rotate(180deg) brightness(1.24) contrast(1.06);
+    }
+    """ if _is_dark else ""
 
     css = f"""
     <style>
@@ -263,11 +274,11 @@ def inject_global_css():
         box-shadow: var(--shadow-card);
     }}
     .jict-section-title {{
-        font-size: 0.72rem;
+        font-size: 0.75rem;
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.06em;
-        color: {_c["text_muted"]};
+        color: {_c["text_primary"]};
         margin: 0 0 1rem 0;
         padding-bottom: 0.6rem;
         border-bottom: 1px solid {_c["border"]};
@@ -275,11 +286,11 @@ def inject_global_css():
 
     /* ── Section Header (inline) ── */
     .jict-section-hdr {{
-        font-size: 0.8rem;
+        font-size: 0.85rem;
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.06em;
-        color: {_c["text_muted"]};
+        color: {_c["text_primary"]};
         margin: 1.5rem 0 0.85rem 0;
         padding-bottom: 0.5rem;
         border-bottom: 1px solid {_c["border"]};
@@ -316,12 +327,15 @@ def inject_global_css():
         margin-bottom: 0.5rem;
     }}
     .jm-value {{
-        font-size: 1.65rem;
+        font-size: clamp(1rem, 2.1vw, 1.65rem);
         font-weight: 700;
         color: {_c["text_primary"]};
         letter-spacing: -0.02em;
         line-height: 1.15;
         margin-bottom: 0.3rem;
+        overflow-wrap: normal;
+        word-break: keep-all;
+        hyphens: none;
     }}
     .jm-sub {{
         font-size: 0.78rem;
@@ -397,6 +411,88 @@ def inject_global_css():
         line-height: 1.55;
     }}
 
+    /* ── Operational Action Cards ── */
+    .jict-action-card {{
+        background: {_c["card"]};
+        border: 1px solid {_c["border"]};
+        border-left: 4px solid {_c["primary"]};
+        border-radius: var(--radius-md);
+        padding: 1rem 1.1rem;
+        margin-bottom: 0.75rem;
+        box-shadow: var(--shadow-card);
+    }}
+    .jict-action-card.jac-high {{ border-left-color: {_c["danger"]}; }}
+    .jict-action-card.jac-medium {{ border-left-color: {_c["warning"]}; }}
+    .jict-action-card.jac-low {{ border-left-color: {_c["primary"]}; }}
+    .jict-action-head {{
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: 0.85rem;
+    }}
+    .jict-action-identity {{
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.45rem 0.65rem;
+    }}
+    .jict-action-unit {{
+        color: {_c["text_primary"]};
+        font-size: 1rem;
+        font-weight: 700;
+    }}
+    .jict-action-category {{
+        color: {_c["text_muted"]};
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }}
+    .jict-action-owner {{
+        color: {_c["text_secondary"]};
+        font-size: 0.76rem;
+        line-height: 1.45;
+        text-align: right;
+        white-space: nowrap;
+    }}
+    .jict-action-grid {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 0.8rem 1.25rem;
+    }}
+    .jict-action-label {{
+        color: {_c["text_muted"]};
+        font-size: 0.67rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        margin-bottom: 0.2rem;
+        text-transform: uppercase;
+    }}
+    .jict-action-body {{
+        color: {_c["text_primary"]};
+        font-size: 0.84rem;
+        line-height: 1.5;
+    }}
+    .jict-action-evidence {{
+        background: {_c["bg_alt"]};
+        border-radius: var(--radius-sm);
+        color: {_c["text_secondary"]};
+        font-size: 0.75rem;
+        line-height: 1.45;
+        margin-top: 0.8rem;
+        padding: 0.55rem 0.7rem;
+    }}
+    .jict-action-evidence strong {{ color: {_c["text_primary"]}; }}
+    .jict-action-evidence details {{ margin: 0; }}
+    .jict-action-evidence summary {{
+        color: {_c["text_primary"]};
+        cursor: pointer;
+        font-weight: 700;
+        list-style-position: outside;
+    }}
+    .jict-action-evidence details[open] summary {{ margin-bottom: 0.45rem; }}
+
     /* ── Chart Card ── */
     .jict-chart-card {{
         background: {_c["card"]};
@@ -439,35 +535,130 @@ def inject_global_css():
 
     /* Selectbox */
     .stSelectbox > div > div,
-    .stSelectbox div[data-baseweb="select"] {{
+    .stSelectbox div[data-baseweb="select"],
+    [data-testid="stSelectbox"] [role="combobox"] {{
         background: {_c["card"]} !important;
         border: 1px solid {_c["border"]} !important;
         border-radius: var(--radius-md) !important;
         color: {_c["text_primary"]} !important;
         min-height: 44px !important;
     }}
-    .stSelectbox div[data-baseweb="select"] * {{
+    .stSelectbox div[data-baseweb="select"] *,
+    [data-testid="stSelectbox"] [role="combobox"],
+    [data-testid="stSelectbox"] button[aria-label="Open"],
+    [data-testid="stSelectbox"] button[aria-label="Open"] svg {{
+        color: {_c["text_primary"]} !important;
+        fill: currentColor !important;
+    }}
+    [data-testid="stSelectbox"] [role="combobox"]::placeholder {{
+        color: {_c["text_muted"]} !important;
+        opacity: 1 !important;
+    }}
+    .stSelectbox > div > div:focus-within,
+    [data-testid="stSelectbox"]:focus-within [role="combobox"] {{
+        border-color: {_c["primary"]} !important;
+        box-shadow: 0 0 0 3px rgba(78, 143, 224, 0.2) !important;
+    }}
+
+    /* Multiselect — keep colored selection tags, theme the field itself */
+    [data-testid="stMultiSelect"] div[data-baseweb="select"] > div,
+    [data-testid="stMultiSelect"] [role="combobox"] {{
+        background-color: {_c["card"]} !important;
+        border-color: {_c["border"]} !important;
         color: {_c["text_primary"]} !important;
     }}
-    .stSelectbox > div > div:focus-within {{
+    [data-testid="stMultiSelect"] div[data-baseweb="select"] > div {{
+        border-radius: var(--radius-md) !important;
+        min-height: 42px !important;
+    }}
+    [data-testid="stMultiSelect"] .react-aria-ComboBox > div[role="group"] {{
+        background-color: {_c["card"]} !important;
+        border: 1px solid {_c["border"]} !important;
+        border-radius: var(--radius-md) !important;
+        color: {_c["text_primary"]} !important;
+        min-height: 42px !important;
+    }}
+    [data-testid="stMultiSelect"] input {{
+        background: transparent !important;
+        color: {_c["text_primary"]} !important;
+        border: none !important;
+        box-shadow: none !important;
+    }}
+    [data-testid="stMultiSelect"] input::placeholder {{
+        color: {_c["text_muted"]} !important;
+        opacity: 1 !important;
+    }}
+    [data-testid="stMultiSelect"] svg,
+    [data-testid="stMultiSelect"] button {{
+        color: {_c["text_secondary"]} !important;
+        fill: currentColor !important;
+    }}
+    [data-testid="stMultiSelect"]:focus-within div[data-baseweb="select"] > div {{
+        border-color: {_c["primary"]} !important;
+        box-shadow: 0 0 0 3px rgba(78, 143, 224, 0.2) !important;
+    }}
+    [data-testid="stMultiSelect"]:focus-within .react-aria-ComboBox > div[role="group"] {{
         border-color: {_c["primary"]} !important;
         box-shadow: 0 0 0 3px rgba(78, 143, 224, 0.2) !important;
     }}
 
     /* Selectbox Dropdown Menu */
     [data-baseweb="menu"],
-    div[data-baseweb="popover"] {{
+    div[data-baseweb="popover"],
+    [role="listbox"] {{
         background-color: {_c["card"]} !important;
         border: 1px solid {_c["border"]} !important;
         border-radius: var(--radius-md) !important;
     }}
     [data-baseweb="menu"] li,
-    [data-baseweb="menu"] div {{
+    [data-baseweb="menu"] div,
+    [role="option"] {{
         color: {_c["text_primary"]} !important;
         background-color: {_c["card"]} !important;
     }}
-    [data-baseweb="menu"] li:hover {{
+    [role="listbox"] [role="option"] *,
+    [role="listbox"][data-empty="true"] * {{
+        color: {_c["text_secondary"]} !important;
+        opacity: 1 !important;
+    }}
+    [data-baseweb="menu"] li:hover,
+    [role="option"]:hover,
+    [role="option"][aria-selected="true"] {{
         background-color: {_c["sidebar_hover"]} !important;
+    }}
+
+    /* Alerts */
+    [data-testid="stAlert"] [data-testid="stAlertContainer"] {{
+        border-radius: var(--radius-md) !important;
+    }}
+    [data-testid="stAlert"] [data-testid="stAlertContentInfo"] {{
+        background: {_c["info_bg"]} !important;
+        border-color: {_c["info_border"]} !important;
+        color: {_c["text_primary"]} !important;
+    }}
+    [data-testid="stAlert"] [data-testid="stAlertContentInfo"] *,
+    [data-testid="stAlert"] [data-testid="stAlertContentSuccess"] * {{
+        color: {_c["text_primary"]} !important;
+    }}
+    [data-testid="stAlert"] [data-testid="stAlertContentWarning"],
+    [data-testid="stAlert"] [data-testid="stAlertContentWarning"] * {{
+        color: {_c["warning"]} !important;
+    }}
+    [data-testid="stAlert"] [data-testid="stAlertContentWarning"]
+        [data-testid="stMarkdownContainer"],
+    [data-testid="stAlert"] [data-testid="stAlertContentWarning"]
+        [data-testid="stMarkdownContainer"] * {{
+        color: {_c["text_primary"]} !important;
+    }}
+    [data-testid="stAlert"] [data-testid="stAlertContentError"],
+    [data-testid="stAlert"] [data-testid="stAlertContentError"] * {{
+        color: {_c["danger"]} !important;
+    }}
+    [data-testid="stAlert"] [data-testid="stAlertContentError"]
+        [data-testid="stMarkdownContainer"],
+    [data-testid="stAlert"] [data-testid="stAlertContentError"]
+        [data-testid="stMarkdownContainer"] * {{
+        color: {_c["text_primary"]} !important;
     }}
 
     /* Date Input */
@@ -480,6 +671,29 @@ def inject_global_css():
         border-radius: var(--radius-md) !important;
         color: {_c["text_primary"]} !important;
         min-height: 42px !important;
+    }}
+    [data-testid="stDateInputField"] {{
+        background-color: {_c["card"]} !important;
+        border: 1px solid {_c["border"]} !important;
+        border-radius: var(--radius-md) !important;
+        color: {_c["text_primary"]} !important;
+        min-height: 42px !important;
+    }}
+    [data-testid="stDateInputField"] .react-aria-DateField,
+    [data-testid="stDateInputField"] .react-aria-DateField [role="group"] {{
+        background: transparent !important;
+        color: {_c["text_primary"]} !important;
+    }}
+    [data-testid="stDateInputField"] span {{
+        color: {_c["text_muted"]} !important;
+    }}
+    [data-testid="stDateInputField"] [role="spinbutton"] {{
+        color: {_c["text_primary"]} !important;
+        caret-color: {_c["primary"]} !important;
+    }}
+    [data-testid="stDateInput"]:focus-within [data-testid="stDateInputField"] {{
+        border-color: {_c["primary"]} !important;
+        box-shadow: 0 0 0 3px rgba(78, 143, 224, 0.2) !important;
     }}
     [data-testid="stDateInput"] svg,
     [data-testid="stDateInput"] button {{
@@ -505,6 +719,32 @@ def inject_global_css():
         color: {_c["text_primary"]} !important;
     }}
 
+    /* File uploader */
+    [data-testid="stFileUploaderDropzone"] {{
+        background: {_c["card"]} !important;
+        border: 1px dashed {_c["border"]} !important;
+        border-radius: var(--radius-md) !important;
+        color: {_c["text_primary"]} !important;
+    }}
+    [data-testid="stFileUploaderDropzone"] * {{
+        color: {_c["text_secondary"]} !important;
+    }}
+    [data-testid="stFileUploaderDropzone"] button {{
+        background: {_c["bg_alt"]} !important;
+        border: 1px solid {_c["border"]} !important;
+        color: {_c["primary"]} !important;
+        opacity: 1 !important;
+    }}
+    [data-testid="stFileUploaderDropzone"] button * {{
+        color: {_c["primary"]} !important;
+        fill: {_c["primary"]} !important;
+    }}
+    [data-testid="stFileUploaderFile"] {{
+        background: {_c["card"]} !important;
+        border: 1px solid {_c["border"]} !important;
+        color: {_c["text_primary"]} !important;
+    }}
+
     /* Number inputs, text inputs */
     .stNumberInput input, .stTextInput input {{
         background: {_c["card"]} !important;
@@ -516,6 +756,26 @@ def inject_global_css():
     .stNumberInput input:focus, .stTextInput input:focus {{
         border-color: {_c["primary"]} !important;
         box-shadow: 0 0 0 3px rgba(78, 143, 224, 0.2) !important;
+    }}
+    .stTextInput input::placeholder,
+    .stNumberInput input::placeholder {{
+        color: {_c["text_muted"]} !important;
+        opacity: 1 !important;
+    }}
+    [data-testid="stNumberInput"] button {{
+        background: {_c["bg_alt"]} !important;
+        border-color: {_c["border"]} !important;
+        color: {_c["text_secondary"]} !important;
+    }}
+    [data-testid="stNumberInput"] button svg {{
+        fill: {_c["text_secondary"]} !important;
+    }}
+
+    /* Checkbox */
+    [data-testid="stCheckbox"] label,
+    [data-testid="stCheckbox"] label p,
+    [data-testid="stCheckbox"] label span {{
+        color: {_c["text_primary"]} !important;
     }}
 
     /* Primary Buttons */
@@ -572,9 +832,10 @@ def inject_global_css():
     [data-testid="stExpander"] summary,
     [data-testid="stExpander"] details summary,
     .streamlit-expanderHeader {{
-        background-color: {_c["card"]} !important;
-        color: {_c["text_primary"]} !important;
-        border-bottom: 1px solid {_c["border"]} !important;
+        background-color: {_c["info_bg"]} !important;
+        color: {_c["primary"]} !important;
+        border-bottom: 1px solid {_c["info_border"]} !important;
+        border-left: 3px solid {_c["primary"]} !important;
         border-radius: var(--radius-md) !important;
         padding: 0.75rem 1.25rem !important;
     }}
@@ -582,6 +843,7 @@ def inject_global_css():
     [data-testid="stExpander"] summary:hover,
     .streamlit-expanderHeader:hover {{
         background-color: {_c["sidebar_hover"]} !important;
+        border-left-color: {_c["accent"]} !important;
     }}
 
     [data-testid="stExpander"] summary *,
@@ -589,8 +851,8 @@ def inject_global_css():
     [data-testid="stExpander"] summary span,
     [data-testid="stExpander"] summary svg,
     .streamlit-expanderHeader * {{
-        color: {_c["text_primary"]} !important;
-        fill: {_c["text_primary"]} !important;
+        color: {_c["primary"]} !important;
+        fill: {_c["primary"]} !important;
         font-weight: 600 !important;
     }}
 
@@ -604,10 +866,26 @@ def inject_global_css():
 
     /* Dataframe */
     [data-testid="stDataFrame"] {{
+        background: {_c["card"]} !important;
         border: 1px solid {_c["border"]} !important;
         border-radius: var(--radius-md) !important;
         overflow: hidden !important;
+        color-scheme: {"dark" if _is_dark else "light"};
     }}
+    [data-testid="stDataFrame"] [data-testid="stElementToolbarButtonContainer"] {{
+        background: {_c["card"]} !important;
+        border: 1px solid {_c["border"]} !important;
+    }}
+    [data-testid="stDataFrame"] [data-testid="stBaseButton-elementToolbar"],
+    [data-testid="stDataFrame"] [data-testid="stElementToolbarButtonIcon"] {{
+        color: {_c["text_secondary"]} !important;
+        fill: currentColor !important;
+    }}
+    [data-testid="stDataFrame"] .dvn-scroller {{
+        scrollbar-color: {_c["primary"]} {_c["card"]};
+        scrollbar-width: thin;
+    }}
+    {_dataframe_canvas_css}
 
     /* Metrics (native st.metric — hide if accidentally used) */
     [data-testid="stMetricValue"] {{
@@ -642,7 +920,7 @@ def inject_global_css():
 
     /* Caption */
     .stCaption, [data-testid="stCaptionContainer"] {{
-        color: {_c["text_muted"]} !important;
+        color: {_c["text_secondary"]} !important;
         font-size: 0.78rem !important;
     }}
 
@@ -688,6 +966,41 @@ def inject_global_css():
 
     /* Remove default Streamlit metric delta arrows etc if shown */
     [data-testid="stMetricDelta"] {{ display: none; }}
+
+    @media (max-width: 640px) {{
+        .block-container {{
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+        }}
+        .jict-app-header {{
+            align-items: flex-start;
+            gap: 0.75rem;
+            padding: 0.9rem 1rem;
+        }}
+        .jict-app-header-sub {{
+            display: none;
+        }}
+        .jict-app-header-status {{
+            flex-shrink: 0;
+        }}
+        .jm-card {{
+            padding: 0.95rem 1rem;
+        }}
+        .jm-value {{
+            font-size: 1.35rem;
+        }}
+        .jict-action-head {{
+            flex-direction: column;
+            gap: 0.45rem;
+        }}
+        .jict-action-owner {{
+            text-align: left;
+            white-space: normal;
+        }}
+        .jict-action-grid {{
+            grid-template-columns: 1fr;
+        }}
+    }}
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
@@ -725,6 +1038,32 @@ def page_header(title: str, description: str = "", context: str = ""):
         parts.append(f'<p class="jict-page-meta">{context}</p>')
     parts.append('</div>')
     st.html("".join(parts))
+
+
+def data_freshness_banner(freshness: dict):
+    """Show data age without implying that the dashboard has a live feed."""
+    data_as_of = freshness.get("data_as_of")
+    month_names = (
+        "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+        "Jul", "Agu", "Sep", "Okt", "Nov", "Des",
+    )
+    date_label = (
+        f"{data_as_of.day:02d} {month_names[data_as_of.month - 1]} {data_as_of.year}"
+        if data_as_of is not None else "Tidak tersedia"
+    )
+    lag_days = freshness.get("lag_days")
+    lag_label = "umur tidak diketahui" if lag_days is None else f"jeda {lag_days} hari"
+    sources = " + ".join(freshness.get("sources") or []) or "Tidak diketahui"
+    badge = status_badge(
+        freshness.get("status", "STATUS TIDAK TERSEDIA"), freshness.get("severity", "info")
+    )
+    st.html(
+        '<div class="jict-section-card" style="padding:0.8rem 1rem;margin-bottom:1rem">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap">'
+        f'<div><strong>Data operasional s.d. {escape(date_label)}</strong>'
+        f'<span style="opacity:.72"> · {escape(lag_label)} · Sumber: {escape(sources)}</span></div>'
+        f'<div>{badge}</div></div></div>'
+    )
 
 
 def section_header(title: str):
@@ -765,6 +1104,65 @@ def metric_card(label: str, value: str, subtext: str = "", status: str = ""):
         f'</div>'
     )
     st.markdown(html, unsafe_allow_html=True)
+
+
+def action_card(
+    priority: str,
+    equipment_id: str,
+    equipment_category: str,
+    finding: str,
+    recommended_action: str,
+    responsible_role: str,
+    target_date: str,
+    evidence: str,
+    evidence_collapsed: bool = False,
+):
+    """Render one evidence-backed operational follow-up card."""
+    priority_key = str(priority).upper()
+    priority_label = {"HIGH": "TINGGI", "MEDIUM": "SEDANG", "LOW": "RENDAH"}.get(
+        priority_key, priority_key
+    )
+    severity = {"HIGH": "danger", "MEDIUM": "warning", "LOW": "info"}.get(
+        priority_key, "info"
+    )
+    card_class = {
+        "HIGH": "jac-high", "MEDIUM": "jac-medium", "LOW": "jac-low"
+    }.get(priority_key, "jac-low")
+
+    badge = status_badge(priority_label, severity)
+    safe_evidence = escape(str(evidence))
+    evidence_html = (
+        f"<details><summary>Lihat dasar data</summary>{safe_evidence}</details>"
+        if evidence_collapsed
+        else f"<strong>Dasar data:</strong> {safe_evidence}"
+    )
+    html = f"""
+    <div class="jict-action-card {card_class}">
+        <div class="jict-action-head">
+            <div class="jict-action-identity">
+                {badge}
+                <span class="jict-action-unit">{escape(str(equipment_id))}</span>
+                <span class="jict-action-category">{escape(str(equipment_category))}</span>
+            </div>
+            <div class="jict-action-owner">
+                PIC: <strong>{escape(str(responsible_role))}</strong><br>
+                Target verifikasi: <strong>{escape(str(target_date))}</strong>
+            </div>
+        </div>
+        <div class="jict-action-grid">
+            <div>
+                <div class="jict-action-label">Kenapa muncul</div>
+                <div class="jict-action-body">{escape(str(finding))}</div>
+            </div>
+            <div>
+                <div class="jict-action-label">Tindakan yang disarankan</div>
+                <div class="jict-action-body">{escape(str(recommended_action))}</div>
+            </div>
+        </div>
+        <div class="jict-action-evidence">{evidence_html}</div>
+    </div>
+    """
+    st.html(html)
 
 
 def status_badge(text: str, severity: str = "info") -> str:
@@ -814,7 +1212,7 @@ def format_chart(fig):
             color=_c["text_secondary"],
             size=12,
         ),
-        title=dict(font=dict(color=_c["text_primary"], size=13, family="Inter")),
+        title=dict(text="", font=dict(color=_c["text_primary"], size=13, family="Inter")),
         legend=dict(
             orientation="h",
             yanchor="bottom",

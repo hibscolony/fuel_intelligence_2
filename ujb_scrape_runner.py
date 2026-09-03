@@ -17,6 +17,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_pla
 import ujb_dashboard_scraper as base
 from src.ujb_date_filter import apply_date_range_robust, collect_filter_diagnostics
 from src.ujb_history import write_snapshot_and_history
+from src.ujb_coverage import write_coverage_manifest
 
 
 def _goto_resilient(page, url: str, label: str, attempts: int = 3) -> None:
@@ -110,6 +111,7 @@ def _coverage(raw_df: pd.DataFrame, date_from: str, date_to: str) -> dict:
             "observed_days": 0,
             "requested_days": int((requested_end - requested_start).days + 1),
             "reaches_requested_start": False,
+            "reaches_requested_end": False,
         }
 
     parsed = pd.to_datetime(raw_df["Date"], errors="coerce").dropna().dt.normalize()
@@ -130,6 +132,9 @@ def _coverage(raw_df: pd.DataFrame, date_from: str, date_to: str) -> dict:
         "requested_days": int((requested_end - requested_start).days + 1),
         "reaches_requested_start": bool(
             observed_start is not None and observed_start <= requested_start
+        ),
+        "reaches_requested_end": bool(
+            observed_end is not None and observed_end >= requested_end
         ),
     }
 
@@ -166,7 +171,7 @@ def run(
             )
 
             base.set_entries_per_page_max(page)
-            raw_df = base.scrape_report_table(page)
+            raw_df, pagination = base.scrape_report_table(page, return_diagnostics=True)
             coverage = _coverage(raw_df, date_from, date_to)
             base.logger.info("Coverage UJB sesudah filter: %s", coverage)
 
@@ -184,6 +189,7 @@ def run(
             diagnostics = {
                 "strategy": strategy,
                 "coverage": coverage,
+                "pagination": pagination,
                 "before": before,
                 "after": after,
             }
@@ -211,6 +217,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     stats = write_snapshot_and_history(result_df, output_dir)
+    coverage_manifest_path = write_coverage_manifest(diagnostics, result_df, output_dir)
     diagnostics_path = output_dir / "ujb_filter_diagnostics.json"
     diagnostics_path.write_text(
         json.dumps(diagnostics, indent=2, ensure_ascii=False),
@@ -223,6 +230,7 @@ def main() -> None:
         f"({stats['history_rows']} unique event; +{stats['new_unique_rows']} event baru)"
     )
     print(f"Diagnostics tersimpan: {diagnostics_path}")
+    print(f"Coverage manifest tersimpan: {coverage_manifest_path}")
 
 
 if __name__ == "__main__":

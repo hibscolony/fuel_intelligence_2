@@ -9,7 +9,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
 from src.data_cleaning import run_cleaning_pipeline
-from src.forecasting_models import forecast_for_date, recursive_forecast, climatology_forecast
+from src.forecasting_models import (
+    climatology_forecast,
+    forecast_for_date,
+    forecast_horizon_totals,
+    recursive_forecast,
+)
 
 
 @pytest.fixture(scope="module")
@@ -66,6 +71,18 @@ def test_recursive_forecast_length_matches_horizon(daily_actual):
     path = recursive_forecast(daily_actual, 10, "seasonal_naive_7")
     assert len(path) == 10
     assert path.index[0] == daily_actual.index.max() + pd.Timedelta(days=1)
+
+
+def test_forecast_horizon_totals_sum_future_predictions_not_history():
+    history = pd.Series(
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        index=pd.date_range("2026-01-01", periods=7, freq="D"),
+    )
+    result = forecast_horizon_totals(history, "seasonal_naive_7", horizons=(7, 30))
+    assert result["as_of_date"] == pd.Timestamp("2026-01-07")
+    assert result["totals"][7] == pytest.approx(28.0)
+    assert result["totals"][30] == pytest.approx(115.0)
+    assert len(result["path"]) == 30
 
 
 def test_climatology_forecast_uses_reference_points(daily_actual):

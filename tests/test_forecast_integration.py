@@ -11,6 +11,7 @@ from src.data_cleaning import run_cleaning_pipeline
 from src.forecast_integration import (
     load_forecast_results, compute_forecast_errors, compute_overall_metrics,
     compute_rolling_performance, classify_model_health, ForecastFormatError,
+    summarize_model_drift, detect_model_drift_warning,
 )
 
 
@@ -71,3 +72,34 @@ def test_rolling_performance_has_all_configured_windows(daily_actual):
     df_err = compute_forecast_errors(df)
     rolling = compute_rolling_performance(df_err)
     assert set(rolling["window_days"].unique()) == set(config.FORECAST_ROLLING_WINDOWS)
+
+
+def test_drift_uses_non_overlapping_baseline_and_detects_deterioration():
+    dates = pd.date_range("2025-01-01", periods=70, freq="D")
+    rolling = pd.DataFrame({
+        "date": dates,
+        "window_days": 30,
+        "rolling_mae": 1.0,
+        "rolling_wape": [8.0] * 40 + [18.0] * 30,
+    })
+
+    result = summarize_model_drift(rolling, window_days=30)
+
+    assert result["baseline_wape"] == pytest.approx(8.0)
+    assert result["current_wape"] == pytest.approx(18.0)
+    assert result["drift_detected"] is True
+    assert "baseline non-overlap" in detect_model_drift_warning(rolling, 30)
+
+
+def test_drift_requires_enough_history_for_non_overlapping_comparison():
+    rolling = pd.DataFrame({
+        "date": pd.date_range("2025-01-01", periods=20, freq="D"),
+        "window_days": 30,
+        "rolling_mae": 1.0,
+        "rolling_wape": 20.0,
+    })
+
+    result = summarize_model_drift(rolling, window_days=30)
+
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert detect_model_drift_warning(rolling, 30) is None
