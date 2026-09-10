@@ -138,9 +138,24 @@ def inject_global_css():
         max-width: 1500px !important;
     }}
 
-    /* ── Hide Streamlit fixed toolbar completely ── */
+    /* ── Keep the responsive sidebar control, hide only Streamlit chrome ──
+       The collapsed-sidebar button lives in/near the header on narrower
+       viewports. Hiding the whole header makes navigation impossible there. */
     [data-testid="stHeader"] {{
+        background: transparent !important;
+        height: 0 !important;
+    }}
+    [data-testid="stHeader"] [data-testid="stToolbar"],
+    [data-testid="stHeader"] [data-testid="stStatusWidget"],
+    [data-testid="stDecoration"] {{
         display: none !important;
+    }}
+    [data-testid="stSidebarCollapsedControl"] {{
+        display: flex !important;
+        position: fixed !important;
+        top: 0.75rem !important;
+        left: 0.75rem !important;
+        z-index: 1000000 !important;
     }}
     [data-testid="stAppViewContainer"] {{
         padding-top: 0 !important;

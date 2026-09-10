@@ -6,6 +6,7 @@ ada exception yg terlempar saat render.
 """
 import sys
 import warnings
+import inspect
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,15 @@ def test_app_entry_point_runs_without_exception():
         at = AppTest.from_file(str(PROJECT_ROOT / "app.py"), default_timeout=180)
         at.run()
     assert not at.exception
+
+
+def test_global_css_keeps_collapsed_sidebar_navigation_available():
+    """Responsive layouts must retain a way to reopen the sidebar."""
+    from src import ui
+
+    css = inspect.getsource(ui.inject_global_css)
+    assert '[data-testid="stSidebarCollapsedControl"]' in css
+    assert '[data-testid="stHeader"] {{\n        display: none' not in css
 
 
 @pytest.mark.parametrize("page_path", [
